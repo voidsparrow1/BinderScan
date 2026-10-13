@@ -1,0 +1,777 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>BinderScan</title>
+<meta name="theme-color" content="#161b26">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one-screen app, sticky header, scrolling view, fixed bottom tab bar (binder-pocket motif for grids) */
+:root{
+  --bg:#f3f4f7; --surface:#ffffff; --surface-2:#e8eaf0; --line:#d5d9e2;
+  --fg:#171b24; --muted:#5d6577; --accent:#b47b12; --accent-fg:#ffffff;
+  --ok:#1f8a4c; --warn:#b5650d; --bad:#c03a2b; --foil:#7b4fd6;
+  --r-common:#5d6577; --r-uncommon:#5f7d94; --r-rare:#b48a1e; --r-mythic:#d0541c;
+  --f-ui:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --radius:10px; color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#11141c; --surface:#1a1f2b; --surface-2:#242b3a; --line:#2f3748;
+  --fg:#e9ecf2; --muted:#98a1b3; --accent:#e0ab4a; --accent-fg:#1a1406;
+  --ok:#4cc27e; --warn:#e89a43; --bad:#ef6a5a; --foil:#a988f2;
+  --r-common:#98a1b3; --r-uncommon:#9cbad0; --r-rare:#e0bb57; --r-mythic:#f07a3e;
+  color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 var(--f-ui);-webkit-tap-highlight-color:transparent}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.app{display:flex;flex-direction:column;height:100%}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 10px;display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:22px;font-weight:800;font-stretch:125%;letter-spacing:-.01em}
+header .sub{font-size:12px;color:var(--muted);font-family:var(--f-mono)}
+main{flex:1;overflow-y:auto;padding:16px 16px 110px}
+.view{display:flex;flex-direction:column;gap:16px;max-width:720px;margin:0 auto}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+nav.tabs button{background:none;border:0;padding:10px 4px 12px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;font-weight:600;color:var(--muted)}
+nav.tabs button[aria-current="page"]{color:var(--accent)}
+nav.tabs svg{width:22px;height:22px}
+.label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+h2{margin:0;font-size:18px;font-weight:750;font-stretch:112%;text-wrap:balance}
+p{margin:0}
+.muted{color:var(--muted)}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px;display:flex;flex-direction:column;gap:12px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:var(--surface-2);border-radius:8px;padding:10px 14px;font-weight:650;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.btn.ghost{background:transparent}
+.btn.small{min-height:34px;padding:6px 10px;font-size:13px}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.wide{flex:1}
+/* layout picker: pocket grids */
+.layouts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.layouts button{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:10px 4px 8px;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;font-weight:650}
+.layouts button[aria-pressed="true"]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.pockets{display:grid;gap:2px}
+.pockets i{display:block;width:9px;height:12px;border-radius:1.5px;background:var(--muted);opacity:.55}
+.layouts button[aria-pressed="true"] .pockets i{background:var(--accent);opacity:1}
+/* editor */
+.editor{position:relative;touch-action:none;border-radius:8px;overflow:hidden;background:#000;user-select:none}
+.editor canvas{display:block;width:100%;height:auto}
+.hint{font-size:13px;color:var(--muted)}
+.progress{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden}
+.progress b{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+/* review list */
+.review{display:flex;flex-direction:column;gap:10px}
+.rv{display:grid;grid-template-columns:56px 1fr;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px;position:relative}
+.rv.off{opacity:.45}
+.rv .thumbs{display:flex;flex-direction:column;gap:4px}
+.rv .thumbs img{width:56px;aspect-ratio:63/88;object-fit:cover;border-radius:4px;background:var(--surface-2)}
+.rv .thumbs .crop{width:56px;height:20px;object-fit:cover;object-position:top;border-radius:3px;opacity:.85}
+.rv .body{min-width:0;display:flex;flex-direction:column;gap:6px}
+.rv .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.rv .name{font-weight:700;line-height:1.25;overflow-wrap:anywhere}
+.rv .meta{font-size:12px;color:var(--muted);font-family:var(--f-mono)}
+.price{font-family:var(--f-mono);font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pos{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);background:var(--surface-2);border-radius:999px;padding:5px 11px;font-size:13px;font-weight:650;min-height:32px;display:inline-flex;align-items:center;gap:6px}
+.chip[aria-pressed="true"].foil{background:var(--foil);border-color:var(--foil);color:#fff}
+.chip.warn{color:var(--warn);border-color:currentColor;background:transparent}
+.status{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-radius:4px;padding:2px 6px}
+.status.matched{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.status.guess{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.status.none{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent)}
+.status.pending{color:var(--muted);background:var(--surface-2)}
+.rar-common{color:var(--r-common)}.rar-uncommon{color:var(--r-uncommon)}.rar-rare{color:var(--r-rare)}.rar-mythic{color:var(--r-mythic)}
+.qty{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+.qty button{border:0;background:var(--surface-2);width:32px;height:32px;font-weight:700}
+.qty span{min-width:28px;text-align:center;font-family:var(--f-mono)}
+.sticky-actions{position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg) 30%);padding-top:18px;display:flex;gap:10px}
+/* collection */
+.totals{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.totals div{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px;min-width:0}
+.totals b{display:block;font-family:var(--f-mono);font-size:18px;font-variant-numeric:tabular-nums}
+.totals div:first-child b{color:var(--accent)}
+.filters{display:grid;grid-template-columns:1fr auto;gap:8px}
+input[type=text],input[type=search],input[type=password],input[type=number],select{width:100%;min-height:44px;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:8px 12px}
+.list{display:flex;flex-direction:column;gap:8px}
+.ci{display:grid;grid-template-columns:44px 1fr auto;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px}
+.ci img{width:44px;aspect-ratio:63/88;object-fit:cover;border-radius:3px;background:var(--surface-2)}
+.ci .body{min-width:0}
+.ci .name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ci .right{text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.foil-dot{color:var(--foil);font-weight:800}
+.empty{text-align:center;padding:36px 16px;color:var(--muted);display:flex;flex-direction:column;gap:10px;align-items:center}
+.field{display:flex;flex-direction:column;gap:6px}
+.field small{color:var(--muted);font-size:12px}
+/* sheet */
+.sheet-bg{position:fixed;inset:0;background:rgb(0 0 0 / .5);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--bg);width:100%;max-width:720px;max-height:88vh;border-radius:16px 16px 0 0;display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom,0px)}
+.sheet-head{padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+.sheet-body{overflow-y:auto;padding:12px 16px 20px;display:flex;flex-direction:column;gap:8px}
+.pr{display:grid;grid-template-columns:50px 1fr auto;gap:12px;align-items:center;text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:8px}
+.pr[aria-current="true"]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.pr img{width:50px;aspect-ratio:63/88;object-fit:cover;border-radius:3px}
+.pr .body{min-width:0}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:999px;font-weight:600;font-size:14px;z-index:30;max-width:calc(100% - 32px)}
+.detail-img{width:100%;max-width:300px;border-radius:12px;align-self:center}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>BinderScan</h1>
+    <span class="sub" id="hdr-sub">MTG · Cardmarket</span>
+  </header>
+  <main id="main"></main>
+  <nav class="tabs" aria-label="Sections">
+    <button data-tab="scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M8 6l1.5-2h5L16 6"/><circle cx="12" cy="13" r="3.5"/></svg>Scan</button>
+    <button data-tab="collection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="7" rx="1"/><rect x="9.5" y="3" width="5" height="7" rx="1"/><rect x="16" y="3" width="5" height="7" rx="1"/><rect x="3" y="14" width="5" height="7" rx="1"/><rect x="9.5" y="14" width="5" height="7" rx="1"/><rect x="16" y="14" width="5" height="7" rx="1"/></svg>Collection</button>
+    <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+  </nav>
+</div>
+<input type="file" id="file-cam" accept="image/*" capture="environment" hidden>
+<input type="file" id="file-pick" accept="image/*" hidden>
+<input type="file" id="file-import" accept="application/json,.json" hidden>
+
+<script>
+"use strict";
+/* ===================== constants & storage ===================== */
+const COUNTRIES = [
+  ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
+  ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
+];
+const LAYOUTS = [
+  {id:"1x1",rows:1,cols:1,label:"Single"},
+  {id:"2x2",rows:2,cols:2,label:"4-pocket"},
+  {id:"3x3",rows:3,cols:3,label:"9-pocket"},
+  {id:"3x4",rows:3,cols:4,label:"12-pocket"}
+];
+let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
+const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
+const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"ocr",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
+function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){toast("Couldn't save: storage full or blocked")}}
+const S = {
+  tab:"scan",
+  settings:Object.assign({},DEFAULT_SETTINGS,load(SK_SET,{})),
+  coll:load(SK,[]),
+  scan:null,       // {img canvas, corners[4], layout}
+  review:null,     // [{...}]
+  scanning:false,
+  progress:0,
+  q:"",sort:"value"
+};
+const saveColl=()=>save(SK,S.coll), saveSet=()=>save(SK_SET,S.settings);
+const $=(s,r=document)=>r.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+const eur=n=>n==null||isNaN(n)?"—":new Intl.NumberFormat("de-DE",{style:"currency",currency:"EUR"}).format(n);
+function toast(msg){const t=document.createElement("div");t.className="toast";t.setAttribute("role","status");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2600)}
+
+/* ===================== Scryfall ===================== */
+let lastCall=0;
+async function sf(path,opts={}){
+  const wait=Math.max(0,lastCall+110-Date.now()); if(wait) await new Promise(r=>setTimeout(r,wait));
+  lastCall=Date.now();
+  const url=path.startsWith("http")?path:"https://api.scryfall.com"+path;
+  const res=await fetch(url,{headers:{"Accept":"application/json",...(opts.body?{"Content-Type":"application/json"}:{})},method:opts.body?"POST":"GET",body:opts.body?JSON.stringify(opts.body):undefined});
+  if(res.status===404) return null;
+  if(!res.ok) throw new Error("Scryfall "+res.status);
+  return res.json();
+}
+function slim(c){
+  const face=c.card_faces?.[0];
+  return {sid:c.id,name:c.name,printed:c.printed_name||face?.printed_name||null,set:c.set,setName:c.set_name,num:c.collector_number,
+    rarity:c.rarity,lang:c.lang,released:c.released_at,
+    img:c.image_uris?.small||face?.image_uris?.small||"",imgL:c.image_uris?.normal||face?.image_uris?.normal||"",
+    eur:c.prices?.eur!=null?+c.prices.eur:null,eurFoil:c.prices?.eur_foil!=null?+c.prices.eur_foil:null,
+    finishes:c.finishes||["nonfoil"],cmUrl:c.purchase_uris?.cardmarket||"",cmId:c.cardmarket_id||null,
+    oracle:c.oracle_id,priced:Date.now()};
+}
+async function byName(name){
+  name=name.trim(); if(name.length<3) return null;
+  let c=await sf("/cards/named?fuzzy="+encodeURIComponent(name));
+  if(c) return c;
+  const ac=await sf("/cards/autocomplete?q="+encodeURIComponent(name.slice(0,Math.max(4,Math.floor(name.length*.6)))));
+  if(ac?.data?.length) return sf("/cards/named?exact="+encodeURIComponent(ac.data[0]));
+  return null;
+}
+async function bySetNum(set,num,lang){
+  set=set.toLowerCase(); num=String(num).replace(/^0+(?=\d)/,"");
+  let c=lang&&lang!=="en"?await sf(`/cards/${set}/${num}/${lang}`):null;
+  return c||sf(`/cards/${set}/${num}`);
+}
+async function prints(card){
+  return (await printsRaw(card.oracle)).map(slim);
+}
+function priceOf(e,foil=e.foil){ if(e.override!=null) return e.override; return foil?e.eurFoil:e.eur }
+function cmLink(e){
+  let u;
+  try{u=new URL(e.cmUrl||`https://www.cardmarket.com/en/Magic/Products/Search?searchString=${encodeURIComponent(e.name)}`)}catch{u=new URL("https://www.cardmarket.com/en/Magic")}
+  u.searchParams.set("sellerCountry",S.settings.countryId);
+  if(e.foil) u.searchParams.set("isFoil","Y");
+  return u.toString();
+}
+
+/* ===================== image helpers ===================== */
+function fileToCanvas(file){
+  return new Promise((ok,bad)=>{
+    const img=new Image(); const url=URL.createObjectURL(file);
+    img.onload=()=>{const max=4000,s=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+      const c=document.createElement("canvas");c.width=Math.round(img.naturalWidth*s);c.height=Math.round(img.naturalHeight*s);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);ok(c)};
+    img.onerror=()=>{URL.revokeObjectURL(url);bad(new Error("That file isn't an image this browser can open."))};
+    img.src=url;
+  });
+}
+function rotateCanvas(src){const c=document.createElement("canvas");c.width=src.height;c.height=src.width;const x=c.getContext("2d");x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(src,0,0);return c}
+// square→quad homography (Heckbert). corners: TL,TR,BR,BL
+function homography(p){
+  const [x0,y0]=p[0],[x1,y1]=p[1],[x2,y2]=p[2],[x3,y3]=p[3];
+  const dx1=x1-x2,dx2=x3-x2,dx3=x0-x1+x2-x3,dy1=y1-y2,dy2=y3-y2,dy3=y0-y1+y2-y3;
+  let a,b,c,d,e,f,g,h;
+  if(Math.abs(dx3)<1e-9&&Math.abs(dy3)<1e-9){a=x1-x0;b=x3-x0;c=x0;d=y1-y0;e=y3-y0;f=y0;g=0;h=0}
+  else{const det=dx1*dy2-dx2*dy1;g=(dx3*dy2-dx2*dy3)/det;h=(dx1*dy3-dx3*dy1)/det;
+    a=x1-x0+g*x1;b=x3-x0+h*x3;c=x0;d=y1-y0+g*y1;e=y3-y0+h*y3;f=y0}
+  return (u,v)=>{const w=g*u+h*v+1;return[(a*u+b*v+c)/w,(d*u+e*v+f)/w]};
+}
+// Warp quad into a flat page of rows×cols card cells
+function warpPage(src,corners,rows,cols){
+  const W=cols*CARD_W,H=rows*CARD_H, map=homography(corners);
+  const sctx=src.getContext("2d"), sd=sctx.getImageData(0,0,src.width,src.height).data, sw=src.width, sh=src.height;
+  const out=document.createElement("canvas");out.width=W;out.height=H;
+  const octx=out.getContext("2d"), od=octx.createImageData(W,H), o=od.data;
+  for(let y=0;y<H;y++){const v=(y+.5)/H;for(let x=0;x<W;x++){
+    let [fx,fy]=map((x+.5)/W,v); fx-=.5; fy-=.5;
+    const oi=(y*W+x)*4; o[oi+3]=255;
+    const x0=Math.floor(fx),y0=Math.floor(fy);
+    if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
+    const ax=fx-x0,ay=fy-y0,i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4;
+    for(let k=0;k<3;k++) o[oi+k]=(sd[i00+k]*(1-ax)+sd[i10+k]*ax)*(1-ay)+(sd[i01+k]*(1-ax)+sd[i11+k]*ax)*ay;
+  }}
+  octx.putImageData(od,0,0);return out;
+}
+function cropCell(page,r,c,insetPct){
+  const ix=CARD_W*insetPct/100, iy=CARD_H*insetPct/100;
+  const out=document.createElement("canvas");out.width=CARD_W;out.height=CARD_H;
+  out.getContext("2d").drawImage(page,c*CARD_W+ix,r*CARD_H+iy,CARD_W-2*ix,CARD_H-2*iy,0,0,CARD_W,CARD_H);return out;
+}
+// Region of a card → enlarged high-contrast canvas for OCR
+function region(cell,x0,y0,x1,y1,scale=2,mode="plain"){
+  const w=(x1-x0)*cell.width,h=(y1-y0)*cell.height;
+  const c=document.createElement("canvas");c.width=Math.round(w*scale);c.height=Math.round(h*scale);
+  const x=c.getContext("2d");x.imageSmoothingQuality="high";x.drawImage(cell,x0*cell.width,y0*cell.height,w,h,0,0,c.width,c.height);
+  const id=x.getImageData(0,0,c.width,c.height),d=id.data;let sum=0;
+  for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];d[i]=d[i+1]=d[i+2]=g;sum+=g}
+  const mean=sum/(d.length/4), inv=mean<115;
+  if(mode==="bin"){ // Otsu threshold, text forced dark on white
+    const hist=new Array(256).fill(0),n=d.length/4;for(let i=0;i<d.length;i+=4)hist[d[i]|0]++;
+    let sumAll=0;for(let t=0;t<256;t++)sumAll+=t*hist[t];
+    let wB=0,sB=0,best=0,th=128;for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist[t];
+      const mB=sB/wB,mF=(sumAll-sB)/wF,b=wB*wF*(mB-mF)**2;if(b>best){best=b;th=t}}
+    for(let i=0;i<d.length;i+=4){let g=d[i]>th?255:0;if(inv)g=255-g;d[i]=d[i+1]=d[i+2]=g}
+  } else
+  for(let i=0;i<d.length;i+=4){let g=d[i];if(inv)g=255-g;g=Math.max(0,Math.min(255,(g-128)*1.6+150));d[i]=d[i+1]=d[i+2]=g}
+  x.putImageData(id,0,0);return c;
+}
+const thumb=(cv,w=160)=>{const c=document.createElement("canvas");c.width=w;c.height=Math.round(cv.height*w/cv.width);c.getContext("2d").drawImage(cv,0,0,c.width,c.height);return c.toDataURL("image/jpeg",.7)};
+
+/* ===================== recognition: on-device OCR ===================== */
+let ocrWorker=null, ocrLangs=null;
+function loadScript(src){return new Promise((ok,bad)=>{const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=()=>bad(new Error("Couldn't load the text-recognition engine. Check your connection."));document.head.appendChild(s)})}
+async function getOcr(){
+  if(ocrWorker&&ocrLangs===S.settings.ocrLangs) return ocrWorker;
+  if(!window.Tesseract) await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
+  if(ocrWorker) await ocrWorker.terminate();
+  ocrWorker=await Tesseract.createWorker(S.settings.ocrLangs,1);ocrLangs=S.settings.ocrLangs;return ocrWorker;
+}
+const clean=s=>s.replace(/[|_~^`"«»{}\[\]<>\\]/g," ").replace(/[^\p{L}\p{N}' ,\-]/gu," ").replace(/\s+/g," ").trim();
+function dice(a,b){a=a.toLowerCase().replace(/[^a-z]/g,"");b=b.toLowerCase().replace(/[^a-z]/g,"");if(a.length<2||b.length<2)return 0;
+  const m=new Map();for(let i=0;i<a.length-1;i++){const k=a.slice(i,i+2);m.set(k,(m.get(k)||0)+1)}
+  let n=0;for(let i=0;i<b.length-1;i++){const k=b.slice(i,i+2),v=m.get(k);if(v){n++;m.set(k,v-1)}}return 2*n/(a.length+b.length-2)}
+const LANGS={EN:"en",DE:"de",FR:"fr",IT:"it",ES:"es",PT:"pt",JA:"ja",JP:"ja",KO:"ko",RU:"ru",CS:"zhs",CT:"zht"};
+const stripZ=n=>String(n||"").replace(/^0+(?=\d)/,"").toLowerCase();
+// Cards sit loose in binder pockets, so nothing assumes an exact position:
+// read the whole top band for the name and the whole bottom band for the set line.
+const DIGITFIX={O:"0",Q:"0",D:"0",I:"1",L:"1","|":"1",T:"1",S:"5",B:"8",Z:"2"};
+const fixNum=t=>t.replace(/[OQDILT|SBZ]/g,ch=>DIGITFIX[ch]).replace(/^0+(?=\d)/,"");
+let SETS=null; // real set codes from Scryfall, cached for a week
+async function loadSets(){
+  if(SETS) return SETS;
+  const c=load("binderscan.sets",null);
+  if(c&&Date.now()-c.t<7*864e5){SETS=new Set(c.codes);return SETS}
+  try{const r=await sf("/sets");SETS=new Set((r?.data||[]).map(x=>x.code.toUpperCase()));save("binderscan.sets",{t:Date.now(),codes:[...SETS]})}catch{SETS=new Set()}
+  return SETS;
+}
+function parseFoot(text,sets=SETS||new Set()){
+  const lines=text.toUpperCase().split("\n").map(l=>l.trim()).filter(Boolean);
+  let num=null,set=null,lang=null,m;
+  // number: "123/280", "R 0123" / "R0123", "0123 R" — search bottom-up
+  for(let i=lines.length-1;i>=0&&!num;i--){const t=lines[i];
+    if(/WIZARD|COAST|©|™|SQUARE|ENIX|\b(?:19|20)\d\d\b/.test(t)&&!/\//.test(t)) continue; // copyright lines
+    if((m=t.match(/([0-9OQDILT|]{2,4})\s*\/\s*[0-9OQDILT|]{2,4}/))&&/\d/.test(m[1])) num=fixNum(m[1]);
+    else if((m=t.match(/\b[CURMLST]\s*([0-9OQDILT|]{3,4})\b/))&&/\d{2}/.test(m[1])) num=fixNum(m[1]);
+    else if((m=t.match(/\b([0-9OQDILT|]{3,4})\s+[CURMLST]\b/))&&/\d{2}/.test(m[1])) num=fixNum(m[1]);
+    if(num&&!/^\d+$/.test(num)) num=null;
+  }
+  // set: a real set code, preferably right before the language tag ("BRO • EN", "FIN SEN"), bottom-up
+  let fallback=null;
+  for(let i=lines.length-1;i>=Math.max(0,lines.length-8)&&!set;i--){
+    const toks=[...lines[i].matchAll(/([A-Z0-9]{3,5})(?=[^A-Z0-9]{0,3}S?(EN|DE|FR|IT|ES|PT|JA|JP|KO|RU)\b)/g)];
+    for(const t of toks) if(sets.has(t[1])&&/[A-Z]/.test(t[1])){set=t[1];lang=LANGS[t[2]];break}
+    if(!fallback) for(const t of lines[i].matchAll(/\b([A-Z][A-Z0-9]{2,4})\b/g)) if(sets.has(t[1])&&!/^(ONE|WAR|CON|MID|THE|AND|CMD|TOP|ALL|ICE|NEW|OLD|SUN)$/.test(t[1])){fallback=t[1];break}
+  }
+  return {set:set||fallback,num,lang};
+}
+function nameCandidates(text){
+  const lines=text.split("\n").map(l=>clean(l).replace(/^[^\p{L}]+|[^\p{L}']+$/gu,"")).filter(l=>(l.match(/\p{L}/gu)||[]).length>=4);
+  const out=[];
+  for(let i=0;i<lines.length&&out.length<6;i++){
+    if(!out.includes(lines[i])) out.push(lines[i]);
+    if(lines[i+1]){const j=lines[i]+" "+lines[i+1];if(j.length<=40) out.push(j)} // names that wrap or break into two OCR lines
+  }
+  return out.slice(0,6);
+}
+async function ocrCell(cell){
+  const w=await getOcr(); await loadSets();
+  await w.setParameters({tessedit_pageseg_mode:"11"});
+  const top=await w.recognize(region(cell,0,0,1,.3,1000/cell.width,"plain"));
+  const bot=await w.recognize(region(cell,0,.62,1,1,1700/cell.width,"plain"));
+  let f=parseFoot(bot.data.text||"");
+  if(!f.set||!f.num){const bot2=await w.recognize(region(cell,0,.62,1,1,1700/cell.width,"bin"));const g=parseFoot(bot2.data.text||"");f={set:f.set||g.set,num:f.num||g.num,lang:f.lang||g.lang}}
+  return {names:nameCandidates(top.data.text||""),...f};
+}
+async function identifyOcr(cell){
+  const o=await ocrCell(cell);
+  const read=[o.names[0]||"no name read",o.set?o.set+(o.num?" #"+o.num:""):""].filter(Boolean).join(" · ");
+  let card=null,score=0;
+  if(o.set&&o.num){
+    try{const c=await bySetNum(o.set,o.num,o.lang);
+      if(c){const sc=Math.max(0,...o.names.map(n=>Math.max(dice(n,c.name),dice(n,c.printed_name||""))));
+        if(!o.names.length||sc>.4){card=c;score=1}}}catch{}
+  }
+  if(!card){
+    for(const n of o.names){try{const c=await byName(n);if(c){const sc=Math.max(dice(n,c.name),dice(n,c.printed_name||""));if(sc>score){card=c;score=sc}}}catch{}
+      if(score>.85) break}
+    if(card&&score<.45) card=null; // OCR noise that happened to fuzzy-match something
+  }
+  if(!card) return {ocr:o.names.length||o.set?read:"Empty pocket or unreadable",card:null,status:"none"};
+  const v=await chooseVersion(cell,card,{set:o.set,num:o.num});
+  return {ocr:read,card:v.card,status:v.sure?"matched":"guess"};
+}
+
+/* ===================== version picking by artwork ===================== */
+// Compares the art box of your photo with each printing's art, then uses the set code / number to break ties.
+const printCache=new Map(), artCache=new Map();
+async function printsRaw(oracle){
+  if(printCache.has(oracle)) return printCache.get(oracle);
+  let r=await sf("/cards/search?order=released&dir=desc&unique=prints&q="+encodeURIComponent(`oracleid:${oracle} game:paper`));
+  const list=r?.data||[];
+  printCache.set(oracle,list);return list;
+}
+const VW=12,VH=17;
+const vctx=(()=>{const c=document.createElement("canvas");c.width=VW;c.height=VH;return c.getContext("2d",{willReadFrequently:true})})();
+function vecOf(src,sx,sy,sw,sh){
+  vctx.drawImage(src,sx,sy,sw,sh,0,0,VW,VH);
+  const d=vctx.getImageData(0,0,VW,VH).data,n=VW*VH,v=new Float32Array(n*3);
+  for(let ch=0;ch<3;ch++){let m=0;for(let i=0;i<n;i++)m+=d[i*4+ch];m/=n;for(let i=0;i<n;i++)v[ch*n+i]=d[i*4+ch]-m}
+  let q=0;for(const a of v)q+=a*a;q=Math.sqrt(q)||1;for(let i=0;i<v.length;i++)v[i]/=q;return v;
+}
+// Whole-card vectors at many positions/sizes inside the pocket, since the card can sit anywhere in it.
+function pocketVecs(cell){
+  const out=[],W=cell.width,H=cell.height;
+  for(const s of [.72,.78,.84,.9,.96,1]){
+    let w=W*s,h=w*88/63; if(h>H){h=H;w=h*63/88}
+    for(let i=0;i<7;i++)for(let j=0;j<7;j++) out.push(vecOf(cell,(W-w)*i/6,(H-h)*j/6,w,h));
+  }
+  return out;
+}
+const loadImg=url=>new Promise((ok,bad)=>{const i=new Image();i.crossOrigin="anonymous";i.onload=()=>ok(i);i.onerror=bad;i.src=url});
+async function artOf(card){
+  const url=card.image_uris?.small||card.card_faces?.[0]?.image_uris?.small; if(!url) return null;
+  if(artCache.has(url)) return artCache.get(url);
+  const img=await loadImg(url); const v=vecOf(img,0,0,img.naturalWidth,img.naturalHeight); artCache.set(url,v); return v;
+}
+async function chooseVersion(cell,card,hint={}){
+  let list;try{list=await printsRaw(card.oracle_id)}catch{list=[]}
+  if(!list.length) return {card,sure:false};
+  if(list.length===1) return {card:list[0],sure:true};
+  const hs=(hint.set||"").toLowerCase(), hn=stripZ(hint.num);
+  if(hs&&hn){const h=list.find(p=>p.set===hs&&stripZ(p.collector_number)===hn);if(h) return {card:card.set===hs?card:h,sure:true}}
+  const groups=new Map();for(const p of list.slice(0,60)){const k=(p.illustration_id||p.id)+"|"+(p.frame||"")+(p.full_art?"F":"")+(p.border_color||"")+((p.frame_effects||[]).join());if(!groups.has(k))groups.set(k,[]);groups.get(k).push(p)}
+  let scored;
+  try{
+    const targets=pocketVecs(cell);
+    scored=await Promise.all([...groups.values()].map(async ps=>{const v=await artOf(ps[0]);let s=-1;
+      if(v)for(const t of targets){let d=0;for(let i=0;i<v.length;i++)d+=v[i]*t[i];if(d>s)s=d}return {ps,s}}));
+  }catch{return {card,sure:false}} // images blocked: keep name match, ask user to check
+  scored.sort((a,b)=>b.s-a.s);
+  const best=scored[0],margin=best.s-(scored[1]?.s??-1);
+  let pick=best.ps.find(p=>hs&&p.set===hs)||best.ps.find(p=>hn&&stripZ(p.collector_number)===hn)||best.ps[0];
+  const sure=best.s>.6&&margin>.08&&(best.ps.length===1||pick.set===hs);
+  return {card:pick,sure};
+}
+
+/* ===================== recognition: Claude vision (optional key) ===================== */
+async function identifyClaude(cells){
+  const content=[];
+  cells.forEach((x,i)=>{const c=document.createElement("canvas");c.width=600;c.height=Math.round(600*CARD_H/CARD_W);c.getContext("2d").drawImage(x.cv,0,0,c.width,c.height);
+    content.push({type:"text",text:`Card ${i+1} (row ${x.r+1}, col ${x.c+1}):`},{type:"image",source:{type:"base64",media_type:"image/jpeg",data:c.toDataURL("image/jpeg",.88).split(",")[1]}})});
+  content.push({type:"text",text:`Each image is one binder pocket holding a Magic: The Gathering card (or empty). For every card read the name and, most importantly, the tiny set code and collector number printed at the bottom-left (e.g. "0123 R" over "MOM • EN", or "123/280"). Return ONLY JSON: {"cards":[{"index":1,"empty":false,"name":"English card name","printed_name":"name as printed","set_code":"set code or null","collector_number":"number or null","language":"en|de|fr|it|es|pt|ja|...","foil":false}]}. Use null when you cannot read a field; never guess a set code. "foil" is true only if a foil sheen is clearly visible.`});
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{
+    "content-type":"application/json","x-api-key":S.settings.apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:S.settings.model,max_tokens:3000,messages:[{role:"user",content}]})});
+  if(!res.ok){const t=await res.text();throw new Error(res.status===401?"Claude rejected the API key. Check it in Settings.":"Claude request failed ("+res.status+"): "+t.slice(0,140))}
+  const j=await res.json(); const txt=(j.content||[]).map(b=>b.text||"").join("");
+  const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error("Claude didn't return a card list.");
+  return JSON.parse(m[0]).cards||[];
+}
+async function resolveClaude(x,cell){
+  if(!x||x.empty) return {ocr:"Empty pocket",card:null,status:"none",empty:true};
+  const read=[x.printed_name||x.name||"unreadable",x.set_code?x.set_code+(x.collector_number?" #"+x.collector_number:""):""].filter(Boolean).join(" · ");
+  let card=null;
+  if(x.set_code&&x.collector_number){try{const c=await bySetNum(x.set_code,x.collector_number,x.language);if(c&&(!x.name||dice(x.name,c.name)>.4))card=c}catch{}}
+  if(!card&&x.name){try{card=await byName(x.name)}catch{}}
+  if(!card) return {ocr:read,card:null,status:"none"};
+  const v=await chooseVersion(cell,card,{set:x.set_code,num:x.collector_number});
+  return {ocr:read,card:v.card,status:v.sure?"matched":"guess",foil:!!x.foil};
+}
+
+/* ===================== scan flow ===================== */
+function layout(){return LAYOUTS.find(l=>l.id===S.settings.layout)||LAYOUTS[2]}
+function defaultCorners(c){const mx=c.width*.03,my=c.height*.03;return[[mx,my],[c.width-mx,my],[c.width-mx,c.height-my],[mx,c.height-my]]}
+async function onPhoto(file){
+  if(!file) return;
+  try{const c=await fileToCanvas(file);S.scan={img:c,corners:defaultCorners(c)};S.review=null;render()}
+  catch(e){toast(e.message)}
+}
+async function runScan(){
+  const {rows,cols}=layout(); const sc=S.scan; if(!sc) return;
+  S.scanning=true;S.progress=0;render();
+  try{
+    // keep the photo's native detail: cell width follows the source resolution (680–1100 px)
+    const qw=Math.max(Math.hypot(sc.corners[1][0]-sc.corners[0][0],sc.corners[1][1]-sc.corners[0][1]),Math.hypot(sc.corners[2][0]-sc.corners[3][0],sc.corners[2][1]-sc.corners[3][1]));
+    CARD_W=Math.round(Math.max(680,Math.min(1100,qw/cols)));CARD_H=Math.round(CARD_W*88/63);
+    const page=warpPage(sc.img,sc.corners,rows,cols);
+    const cells=[];for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)cells.push({r,c,cv:cropCell(page,r,c,S.settings.inset)});
+    S.review=cells.map(x=>({key:uid(),r:x.r,c:x.c,thumb:thumb(x.cv),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}));
+    render();
+    let claude=null;
+    if(S.settings.engine==="claude"&&S.settings.apiKey){
+      setProgress(.15,"Asking Claude to read the page…");
+      try{claude=await identifyClaude(cells)}catch(e){toast(e.message+" Falling back to on-device OCR.")}
+    }
+    for(let i=0;i<cells.length;i++){
+      const it=S.review[i]; let res;
+      try{
+        if(claude){setProgress(i/cells.length,`Matching card ${i+1} of ${cells.length}…`);res=await resolveClaude(claude.find(k=>+k.index===i+1),cells[i].cv)}
+        else{setProgress(i/cells.length,`Reading card ${i+1} of ${cells.length}…`);res=await identifyOcr(cells[i].cv)}
+      }catch(e){res={ocr:"Error: "+e.message,card:null,status:"none"}}
+      it.ocr=res.ocr;it.status=res.status;it.card=res.card?slim(res.card):null;
+      if(res.foil&&it.card?.finishes.includes("foil")) it.foil=true;
+      if(it.card&&!it.card.finishes.includes("nonfoil")) it.foil=true;
+      if(!it.card) it.include=false;
+      setProgress((i+1)/cells.length);renderReview();
+    }
+  }catch(e){toast(e.message)}
+  S.scanning=false;render();
+}
+function setProgress(p,msg){S.progress=p;const b=$("#prog b");if(b)b.style.width=Math.round(p*100)+"%";if(msg&&$("#prog-msg"))$("#prog-msg").textContent=msg}
+function commitReview(){
+  const items=S.review.filter(x=>x.include&&x.card); if(!items.length){toast("No cards selected to add");return}
+  const binder=S.settings.binder.trim()||"Unsorted"; let added=0;
+  for(const it of items){
+    const ex=S.coll.find(e=>e.sid===it.card.sid&&e.foil===it.foil&&e.binder===binder);
+    if(ex) ex.qty+=it.qty; else S.coll.push({...it.card,id:uid(),foil:it.foil,qty:it.qty,binder,override:null,added:Date.now()});
+    added+=it.qty;
+  }
+  saveColl();S.review=null;S.scan=null;toast(`Added ${added} card${added>1?"s":""} to ${binder}`);S.tab="collection";render();
+}
+
+/* ===================== sheets: version picker & manual search ===================== */
+function sheet(title,bodyHtml,onMount){
+  const bg=document.createElement("div");bg.className="sheet-bg";
+  bg.innerHTML=`<div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}"><div class="sheet-head"><h2>${esc(title)}</h2><button class="btn small ghost" data-close>Close</button></div><div class="sheet-body">${bodyHtml}</div></div>`;
+  const close=()=>bg.remove();
+  bg.addEventListener("click",e=>{if(e.target===bg||e.target.closest("[data-close]"))close()});
+  document.body.appendChild(bg);onMount?.($(".sheet-body",bg),close);return close;
+}
+function printRow(p,cur,foil){
+  const pr=foil?p.eurFoil:p.eur;
+  return `<button class="pr" data-sid="${p.sid}" aria-current="${p.sid===cur}"><img src="${esc(p.img)}" alt="" loading="lazy"><span class="body"><span style="font-weight:700;display:block">${esc(p.setName)}</span><span class="meta mono muted">${esc(p.set.toUpperCase())} #${esc(p.num)} · <span class="rar-${p.rarity}">${esc(p.rarity)}</span> · ${esc((p.released||"").slice(0,4))}</span><span class="meta mono muted" style="display:block">${p.finishes.map(f=>f==="nonfoil"?"normal":f).join(" / ")}</span></span><span class="price">${eur(pr)}</span></button>`;
+}
+function pickVersion(target,onPick){
+  sheet("Choose version",`<p class="muted">Loading printings of ${esc(target.name)}…</p>`,async(body,close)=>{
+    try{const list=await prints(target);
+      body.innerHTML=`<p class="hint">${list.length} printings · prices are Cardmarket ${target.foil?"foil":"non-foil"} trend</p>`+list.map(p=>printRow(p,target.sid,target.foil)).join("");
+      body.onclick=e=>{const b=e.target.closest(".pr");if(!b)return;onPick(list.find(p=>p.sid===b.dataset.sid));close()};
+    }catch(e){body.innerHTML=`<p>Couldn't load printings: ${esc(e.message)}</p>`}
+  });
+}
+function manualSearch(initial,onPick){
+  sheet("Find card",`<input type="search" id="ms-q" placeholder="Card name (English)" value="${esc(initial||"")}" autocomplete="off"><div id="ms-res" class="list"></div>`,(body,close)=>{
+    const q=$("#ms-q",body),out=$("#ms-res",body);let t;
+    const go=async()=>{const v=q.value.trim();if(v.length<2){out.innerHTML="";return}
+      try{const r=await sf("/cards/autocomplete?q="+encodeURIComponent(v));
+        out.innerHTML=(r?.data||[]).slice(0,12).map(n=>`<button class="btn" style="justify-content:flex-start" data-n="${esc(n)}">${esc(n)}</button>`).join("")||`<p class="muted">No card names match "${esc(v)}".</p>`}catch(e){out.innerHTML=`<p>${esc(e.message)}</p>`}};
+    q.oninput=()=>{clearTimeout(t);t=setTimeout(go,250)};go();setTimeout(()=>q.focus(),50);
+    out.onclick=async e=>{const b=e.target.closest("[data-n]");if(!b)return;const c=await sf("/cards/named?exact="+encodeURIComponent(b.dataset.n));if(c){onPick(slim(c));close()}};
+  });
+}
+
+/* ===================== render ===================== */
+const pocketsIcon=(r,c)=>`<span class="pockets" style="grid-template-columns:repeat(${c},9px)">${"<i></i>".repeat(r*c)}</span>`;
+function render(){
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-current",b.dataset.tab===S.tab?"page":"false"));
+  $("#hdr-sub").textContent=`MTG · Cardmarket · ${S.settings.country}`;
+  const m=$("#main");
+  if(S.tab==="scan") m.innerHTML=viewScan();
+  else if(S.tab==="collection") m.innerHTML=viewCollection();
+  else m.innerHTML=viewSettings();
+  if(S.tab==="scan"&&S.scan&&!S.review) mountEditor();
+  if(S.tab==="scan"&&S.review) renderReview();
+}
+function viewScan(){
+  const L=layout();
+  if(S.review){
+    return `<section class="view">
+      <div class="panel" ${S.scanning?"":"hidden"}><div class="row" style="justify-content:space-between"><span class="label">Scanning</span><span class="mono muted" id="prog-msg">Preparing…</span></div><div class="progress" id="prog"><b style="width:${Math.round(S.progress*100)}%"></b></div></div>
+      <div class="row" style="justify-content:space-between"><h2>Review ${S.review.length} card${S.review.length>1?"s":""}</h2><span class="muted mono" id="rv-sum"></span></div>
+      <p class="hint">Check each card before it's saved. Tap <b>Foil</b> to switch finish, <b>Version</b> to pick the exact printing, or <b>Search</b> if it was misread.</p>
+      <div class="review" id="review"></div>
+      <div class="sticky-actions"><button class="btn ghost" id="rv-cancel">Discard</button><button class="btn primary wide" id="rv-add" ${S.scanning?"disabled":""}>Add to ${esc(S.settings.binder||"collection")}</button></div>
+    </section>`;
+  }
+  if(S.scan){
+    return `<section class="view">
+      <div class="row" style="justify-content:space-between"><h2>Fit the grid</h2><span class="mono muted">${L.label} · ${L.rows}×${L.cols}</span></div>
+      <p class="hint">Drag the four corners onto the outer edges of the cards. Each box should hold one card.</p>
+      <div class="editor" id="editor"><canvas id="ed-cv"></canvas></div>
+      <div class="layouts" id="layouts">${LAYOUTS.map(l=>`<button data-l="${l.id}" aria-pressed="${l.id===L.id}">${pocketsIcon(l.rows,l.cols)}${l.label}</button>`).join("")}</div>
+      <div class="row"><button class="btn" id="ed-rot">Rotate</button><button class="btn" id="ed-reset">Reset corners</button><button class="btn ghost" id="ed-retake">Retake</button></div>
+      <button class="btn primary" id="ed-scan">Scan ${L.rows*L.cols} card${L.rows*L.cols>1?"s":""}</button>
+      <p class="hint mono">Recognition: ${S.settings.engine==="claude"&&S.settings.apiKey?"Claude vision":"on-device OCR"} · saving to ${esc(S.settings.binder)}</p>
+      ${S.settings.engine==="claude"&&S.settings.apiKey?"":`<p class="hint">On-device OCR misses foils, full-art and glare-heavy cards. For full binder pages, switch to Claude vision in Settings.</p>`}
+    </section>`;
+  }
+  return `<section class="view">
+    <div class="panel">
+      <span class="label">Binder layout</span>
+      <div class="layouts" id="layouts">${LAYOUTS.map(l=>`<button data-l="${l.id}" aria-pressed="${l.id===L.id}">${pocketsIcon(l.rows,l.cols)}${l.label}</button>`).join("")}</div>
+      <div class="field"><label class="label" for="binder">Save to binder</label><input type="text" id="binder" value="${esc(S.settings.binder)}" list="binders"><datalist id="binders">${[...new Set(S.coll.map(e=>e.binder))].map(b=>`<option value="${esc(b)}">`).join("")}</datalist></div>
+      <button class="btn primary" id="take">Take photo</button>
+      <button class="btn" id="pick">Choose from photos</button>
+    </div>
+    <div class="panel"><span class="label">For a clean scan</span>
+      <p class="muted">Lay the binder flat and shoot from straight above. Tilt slightly to dodge glare on the sleeves. Fill the frame with the page; you'll line up the corners next.</p></div>
+  </section>`;
+}
+function renderReview(){
+  const box=$("#review"); if(!box||!S.review) return;
+  box.innerHTML=S.review.map((it,i)=>{
+    const c=it.card, p=c?(it.foil?c.eurFoil:c.eur):null;
+    const canFoil=c&&c.finishes.includes("foil")&&c.finishes.includes("nonfoil");
+    return `<article class="rv ${it.include?"":"off"}" data-i="${i}">
+      <div class="thumbs"><img src="${esc(c?.img||it.thumb)}" alt=""><img class="crop" src="${it.thumb}" alt="Your photo"></div>
+      <div class="body">
+        <div class="top"><div style="min-width:0">
+          <div class="name">${c?esc(c.name):`<span class="muted">${esc(it.ocr||"Reading…")}</span>`}</div>
+          <div class="meta">${c?`${esc(c.set.toUpperCase())} #${esc(c.num)} · <span class="rar-${c.rarity}">${esc(c.rarity)}</span>${c.lang!=="en"?" · "+esc(c.lang.toUpperCase()):""}`:"&nbsp;"}</div>
+        </div><div style="text-align:right"><div class="price">${c?eur(p):""}</div><span class="pos">R${it.r+1}·C${it.c+1}</span></div></div>
+        <div class="row" style="gap:6px"><span class="status ${it.status}">${{matched:"Exact match",guess:"Check version",none:"Not found",pending:"Reading"}[it.status]}</span>${c&&c.setName?`<span class="meta" style="font-family:var(--f-ui)">${esc(c.setName)}</span>`:""}</div>
+        ${it.ocr&&it.status!=="pending"?`<div class="meta">Read: ${esc(it.ocr)}</div>`:""}
+        ${it.status==="pending"?"":`<div class="chips">
+          ${c?`<button class="chip foil" data-act="foil" aria-pressed="${it.foil}" ${canFoil?"":"disabled title=\"Only one finish exists\""}>✦ Foil</button>
+          <button class="chip ${it.status==="guess"?"warn":""}" data-act="ver">Version</button>`:""}
+          <button class="chip" data-act="search">Search</button>
+          ${c?`<span class="qty"><button data-act="dec" aria-label="Fewer">−</button><span>${it.qty}</span><button data-act="inc" aria-label="More">+</button></span>`:""}
+          <button class="chip" data-act="inc-toggle">${it.include?"Skip":"Include"}</button>
+        </div>`}
+      </div></article>`;
+  }).join("");
+  const sel=S.review.filter(x=>x.include&&x.card);
+  const tot=sel.reduce((s,x)=>s+(x.foil?x.card.eurFoil:x.card.eur||0)*x.qty,0);
+  const sum=$("#rv-sum"); if(sum) sum.textContent=`${sel.reduce((s,x)=>s+x.qty,0)} selected · ${eur(tot)}`;
+}
+function sortedColl(){
+  const q=S.q.toLowerCase();
+  let l=S.coll.filter(e=>!q||e.name.toLowerCase().includes(q)||(e.printed||"").toLowerCase().includes(q)||e.setName.toLowerCase().includes(q)||e.binder.toLowerCase().includes(q));
+  const v=e=>(priceOf(e)||0)*e.qty;
+  l.sort(S.sort==="value"?(a,b)=>v(b)-v(a):S.sort==="name"?(a,b)=>a.name.localeCompare(b.name):S.sort==="set"?(a,b)=>a.set.localeCompare(b.set)||a.num.localeCompare(b.num,undefined,{numeric:true}):(a,b)=>b.added-a.added);
+  return l;
+}
+function viewCollection(){
+  const n=S.coll.reduce((s,e)=>s+e.qty,0), total=S.coll.reduce((s,e)=>s+(priceOf(e)||0)*e.qty,0);
+  const oldest=S.coll.length?Math.min(...S.coll.map(e=>e.priced||0)):0;
+  if(!S.coll.length) return `<section class="view"><div class="empty">${pocketsIcon(3,3)}<h2>No cards yet</h2><p>Scan a binder page or a single card and it will show up here with its Cardmarket price.</p><button class="btn primary" data-goto="scan">Scan cards</button></div>${backupPanel()}</section>`;
+  const list=sortedColl();
+  return `<section class="view">
+    <div class="totals"><div><span class="label">Value</span><b>${eur(total)}</b></div><div><span class="label">Cards</span><b>${n}</b></div><div><span class="label">Unique</span><b>${S.coll.length}</b></div></div>
+    <div class="row" style="justify-content:space-between"><span class="hint mono">Prices from ${oldest?new Date(oldest).toLocaleDateString("de-DE"):"—"}</span><button class="btn small" id="refresh">Refresh prices</button></div>
+    <div class="filters"><input type="search" id="cq" placeholder="Search name, set, binder" value="${esc(S.q)}"><select id="csort" aria-label="Sort"><option value="value">Value</option><option value="name">Name</option><option value="set">Set</option><option value="added">Newest</option></select></div>
+    <div class="list" id="clist">${list.map(e=>`<button class="ci" data-id="${e.id}" style="text-align:left;font:inherit;color:inherit">
+      <img src="${esc(e.img)}" alt="" loading="lazy">
+      <span class="body"><span class="name" style="display:block">${esc(e.name)}${e.foil?' <span class="foil-dot">✦</span>':""}</span><span class="meta mono muted">${esc(e.set.toUpperCase())} #${esc(e.num)} · ${esc(e.binder)}</span></span>
+      <span class="right"><span class="price">${eur(priceOf(e))}</span><span class="mono muted" style="font-size:12px">×${e.qty}${e.override!=null?" · own":""}</span></span></button>`).join("")||`<p class="muted">Nothing matches "${esc(S.q)}".</p>`}</div>
+    ${backupPanel()}
+  </section>`;
+}
+const backupPanel=()=>`<div class="panel"><span class="label">Backup</span><p class="hint">Your collection lives on this phone only. Export it now and then.</p><div class="row"><button class="btn small" id="exp-csv">Export CSV</button><button class="btn small" id="exp-json">Export backup</button><button class="btn small" id="imp-json">Import backup</button></div></div>`;
+function cardDetail(id){
+  const e=S.coll.find(x=>x.id===id); if(!e) return;
+  const canFoil=e.finishes.includes("foil")&&e.finishes.includes("nonfoil");
+  sheet(e.name,`
+    <img class="detail-img" src="${esc(e.imgL||e.img)}" alt="">
+    <div class="row" style="justify-content:space-between"><span class="meta mono muted">${esc(e.setName)} · ${esc(e.set.toUpperCase())} #${esc(e.num)}</span><span class="rar-${e.rarity} mono">${esc(e.rarity)}</span></div>
+    <div class="totals"><div><span class="label">Trend</span><b>${eur(e.eur)}</b></div><div><span class="label">Foil trend</span><b>${eur(e.eurFoil)}</b></div><div><span class="label">Qty</span><b>${e.qty}</b></div></div>
+    <a class="btn primary" href="${esc(cmLink(e))}" target="_blank" rel="noopener">Cheapest from ${esc(S.settings.country)} on Cardmarket</a>
+    <div class="field"><label class="label" for="d-ovr">Your price from Cardmarket (optional)</label><input type="number" id="d-ovr" inputmode="decimal" step="0.01" min="0" placeholder="e.g. cheapest ${esc(S.settings.country)} offer" value="${e.override??""}"><small>Overrides the trend price in your totals. Leave empty to use the trend.</small></div>
+    <div class="row"><button class="chip foil" id="d-foil" aria-pressed="${e.foil}" ${canFoil?"":"disabled"}>✦ Foil</button><button class="chip" id="d-ver">Version</button>
+      <span class="qty"><button id="d-dec" aria-label="Fewer">−</button><span id="d-q">${e.qty}</span><button id="d-inc" aria-label="More">+</button></span></div>
+    <div class="field"><label class="label" for="d-binder">Binder</label><input type="text" id="d-binder" value="${esc(e.binder)}"></div>
+    <div class="row"><button class="btn primary wide" id="d-save">Save</button><button class="btn ghost" id="d-del" style="color:var(--bad)">Remove</button></div>`,
+  (body,close)=>{
+    let q=e.qty,foil=e.foil,ver=null;
+    $("#d-inc",body).onclick=()=>{q++;$("#d-q",body).textContent=q};
+    $("#d-dec",body).onclick=()=>{q=Math.max(1,q-1);$("#d-q",body).textContent=q};
+    $("#d-foil",body).onclick=ev=>{foil=!foil;ev.currentTarget.setAttribute("aria-pressed",foil)};
+    $("#d-ver",body).onclick=()=>pickVersion({...e,foil},p=>{ver=p;toast(`Version set to ${p.setName}. Tap Save.`)});
+    $("#d-save",body).onclick=()=>{
+      const o=$("#d-ovr",body).value.trim();
+      Object.assign(e,ver?{...ver,id:e.id,binder:e.binder,added:e.added}:{}, {qty:q,foil,override:o===""?null:Math.max(0,parseFloat(o.replace(",","."))),binder:$("#d-binder",body).value.trim()||"Unsorted"});
+      if(ver&&!e.finishes.includes(foil?"foil":"nonfoil")) e.foil=!foil;
+      saveColl();close();render();toast("Saved");
+    };
+    let armed=false;
+    $("#d-del",body).onclick=ev=>{if(!armed){armed=true;ev.currentTarget.textContent="Tap again to remove";return}
+      S.coll=S.coll.filter(x=>x.id!==e.id);saveColl();close();render();toast("Removed");};
+  });
+}
+function viewSettings(){
+  const s=S.settings;
+  return `<section class="view">
+    <div class="panel"><span class="label">Location</span>
+      <div class="field"><label for="s-country">Your country</label><select id="s-country">${COUNTRIES.map(([n])=>`<option ${n===s.country?"selected":""}>${n}</option>`).join("")}</select>
+      <small>Used for the "Cheapest from ${esc(s.country)}" link, which opens Cardmarket filtered to sellers in your country, sorted cheapest first.</small></div>
+      <div class="field"><label for="s-cid">Cardmarket seller-country ID</label><input type="number" id="s-cid" value="${s.countryId}"><small>If Cardmarket shows another country after tapping the link, correct this number.</small></div>
+    </div>
+    <div class="panel"><span class="label">Card recognition</span>
+      <div class="field"><label for="s-engine">Engine</label><select id="s-engine"><option value="ocr" ${s.engine==="ocr"?"selected":""}>On-device OCR (free, offline-capable)</option><option value="claude" ${s.engine==="claude"?"selected":""}>Claude vision (more accurate, needs API key)</option></select></div>
+      <div class="field"><label for="s-langs">OCR languages</label><select id="s-langs"><option value="eng+deu" ${s.ocrLangs==="eng+deu"?"selected":""}>English + German</option><option value="eng" ${s.ocrLangs==="eng"?"selected":""}>English only</option><option value="eng+deu+fra+ita+spa" ${s.ocrLangs.length>8?"selected":""}>EN, DE, FR, IT, ES</option></select><small>German card names are matched through the set code and number printed bottom-left.</small></div>
+      <div class="field"><label for="s-key">Anthropic API key</label><input type="password" id="s-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"><small>Stored on this phone only and sent straight to Anthropic. Leave empty to use OCR.</small></div>
+      <div class="field"><label for="s-model">Claude model</label><input type="text" id="s-model" value="${esc(s.model)}"></div>
+      <div class="field"><label for="s-inset">Pocket margin trim: <span class="mono" id="s-inset-v">${s.inset}%</span></label><input type="range" id="s-inset" min="0" max="12" value="${s.inset}"><small>Raise it if the sleeve edges get read instead of the card.</small></div>
+    </div>
+    <div class="panel"><span class="label">About prices</span><p class="muted">Prices are Cardmarket trend prices (EUR) supplied by Scryfall, refreshed daily. Cardmarket doesn't offer price access to new apps, so the cheapest offer from your country is one tap away on each card. You can enter it as your own price.</p></div>
+  </section>`;
+}
+
+/* ===================== corner editor ===================== */
+function mountEditor(){
+  const cv=$("#ed-cv"), sc=S.scan, img=sc.img;
+  cv.width=img.width;cv.height=img.height;
+  const ctx=cv.getContext("2d"); const L=layout();
+  const hr=()=>Math.max(img.width,img.height)*.028;
+  function draw(){
+    ctx.drawImage(img,0,0);
+    const p=sc.corners, map=homography(p);
+    ctx.fillStyle="rgba(0,0,0,.45)";ctx.beginPath();ctx.rect(0,0,img.width,img.height);ctx.moveTo(...p[0]);ctx.lineTo(...p[3]);ctx.lineTo(...p[2]);ctx.lineTo(...p[1]);ctx.closePath();ctx.fill("evenodd");
+    const lw=Math.max(2,img.width/400);ctx.lineWidth=lw;ctx.strokeStyle="#e0ab4a";
+    const line=(a,b)=>{ctx.beginPath();for(let t=0;t<=1.0001;t+=.1){const [x,y]=map(a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t);t===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke()};
+    for(let c=0;c<=L.cols;c++)line([c/L.cols,0],[c/L.cols,1]);
+    for(let r=0;r<=L.rows;r++)line([0,r/L.rows],[1,r/L.rows]);
+    p.forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,hr(),0,7);ctx.fillStyle="rgba(224,171,74,.35)";ctx.fill();ctx.lineWidth=lw*1.5;ctx.stroke()});
+  }
+  draw();
+  let drag=-1;
+  const pos=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*img.width/r.width,(e.clientY-r.top)*img.height/r.height]};
+  cv.onpointerdown=e=>{const [x,y]=pos(e);let best=-1,bd=1e9;sc.corners.forEach(([cx,cy],i)=>{const d=Math.hypot(cx-x,cy-y);if(d<bd){bd=d;best=i}});
+    if(bd<hr()*3){drag=best;cv.setPointerCapture(e.pointerId)}};
+  cv.onpointermove=e=>{if(drag<0)return;const [x,y]=pos(e);sc.corners[drag]=[Math.max(0,Math.min(img.width,x)),Math.max(0,Math.min(img.height,y))];draw()};
+  cv.onpointerup=cv.onpointercancel=()=>{drag=-1};
+}
+
+/* ===================== events ===================== */
+document.querySelector("nav.tabs").onclick=e=>{const b=e.target.closest("[data-tab]");if(b){S.tab=b.dataset.tab;render()}};
+$("#file-cam").onchange=e=>{onPhoto(e.target.files[0]);e.target.value=""};
+$("#file-pick").onchange=e=>{onPhoto(e.target.files[0]);e.target.value=""};
+$("#file-import").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
+  try{const d=JSON.parse(await f.text());const items=Array.isArray(d)?d:d.cards;if(!Array.isArray(items))throw 0;
+    const ids=new Set(S.coll.map(x=>x.id));let n=0;for(const it of items)if(it.sid&&!ids.has(it.id)){S.coll.push({...it,id:it.id||uid()});n++}
+    saveColl();render();toast(`Imported ${n} entries`)}catch{toast("That file isn't a BinderScan backup.")}};
+function download(name,text,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
+async function refreshPrices(btn){
+  btn.disabled=true;btn.textContent="Refreshing…";
+  try{const ids=[...new Set(S.coll.map(e=>e.sid))];
+    for(let i=0;i<ids.length;i+=75){const r=await sf("/cards/collection",{body:{identifiers:ids.slice(i,i+75).map(id=>({id}))}});
+      for(const c of r?.data||[]){const s=slim(c);S.coll.filter(e=>e.sid===c.id).forEach(e=>Object.assign(e,{eur:s.eur,eurFoil:s.eurFoil,cmUrl:s.cmUrl,priced:s.priced}))}}
+    saveColl();toast("Prices updated")}catch(e){toast("Couldn't refresh prices: "+e.message)}
+  render();
+}
+document.addEventListener("click",e=>{
+  const t=e.target.closest("button,[data-goto]"); if(!t) return;
+  if(t.dataset.goto){S.tab=t.dataset.goto;render();return}
+  if(t.id==="take") return $("#file-cam").click();
+  if(t.id==="pick") return $("#file-pick").click();
+  if(t.dataset.l){S.settings.layout=t.dataset.l;saveSet();render();return}
+  if(t.id==="ed-rot"){S.scan.img=rotateCanvas(S.scan.img);S.scan.corners=defaultCorners(S.scan.img);render();return}
+  if(t.id==="ed-reset"){S.scan.corners=defaultCorners(S.scan.img);render();return}
+  if(t.id==="ed-retake"){S.scan=null;render();return}
+  if(t.id==="ed-scan") return runScan();
+  if(t.id==="rv-cancel"){S.review=null;render();return}
+  if(t.id==="rv-add") return commitReview();
+  if(t.id==="refresh") return refreshPrices(t);
+  if(t.id==="exp-json") return download(`binderscan-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({app:"BinderScan",version:1,cards:S.coll},null,1),"application/json");
+  if(t.id==="exp-csv"){const h=["Name","Set","Set code","Number","Language","Foil","Qty","Price EUR","Total EUR","Binder","Cardmarket ID"];
+    const rows=S.coll.map(e=>[e.name,e.setName,e.set.toUpperCase(),e.num,e.lang,e.foil?"yes":"no",e.qty,priceOf(e)??"",priceOf(e)!=null?(priceOf(e)*e.qty).toFixed(2):"",e.binder,e.cmId??""]);
+    return download("binderscan.csv",[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n"),"text/csv")}
+  if(t.id==="imp-json") return $("#file-import").click();
+  const ci=t.closest(".ci"); if(ci) return cardDetail(ci.dataset.id);
+  const rv=t.closest(".rv"); if(rv&&t.dataset.act){
+    const it=S.review[+rv.dataset.i];
+    switch(t.dataset.act){
+      case "foil": it.foil=!it.foil;break;
+      case "inc": it.qty++;break;
+      case "dec": it.qty=Math.max(1,it.qty-1);break;
+      case "inc-toggle": it.include=!it.include;break;
+      case "ver": return pickVersion({...it.card,foil:it.foil},p=>{it.card=p;it.status="matched";if(!p.finishes.includes(it.foil?"foil":"nonfoil"))it.foil=!it.foil;renderReview()});
+      case "search": return manualSearch(it.card?.name||(it.ocr.startsWith("(")?"":it.ocr),p=>{it.card=p;it.status="guess";it.include=true;it.foil=!p.finishes.includes("nonfoil");renderReview()});
+    }
+    renderReview();
+  }
+});
+document.addEventListener("input",e=>{
+  const id=e.target.id, s=S.settings;
+  if(id==="binder"){s.binder=e.target.value;saveSet()}
+  if(id==="cq"){S.q=e.target.value;const pos=e.target.selectionStart;render();const n=$("#cq");n.focus();n.setSelectionRange(pos,pos)}
+  if(id==="s-key"){s.apiKey=e.target.value.trim();saveSet()}
+  if(id==="s-model"){s.model=e.target.value.trim()||DEFAULT_SETTINGS.model;saveSet()}
+  if(id==="s-cid"){s.countryId=parseInt(e.target.value)||7;saveSet()}
+  if(id==="s-inset"){s.inset=+e.target.value;$("#s-inset-v").textContent=s.inset+"%";saveSet()}
+});
+document.addEventListener("change",e=>{
+  const id=e.target.id, s=S.settings;
+  if(id==="csort"){S.sort=e.target.value;render()}
+  if(id==="s-country"){s.country=e.target.value;s.countryId=COUNTRIES.find(c=>c[0]===s.country)[1];saveSet();render()}
+  if(id==="s-engine"){s.engine=e.target.value;saveSet();if(s.engine==="claude"&&!s.apiKey)toast("Add your API key below to use Claude")}
+  if(id==="s-langs"){s.ocrLangs=e.target.value;saveSet()}
+});
+const _render=render; render=function(){_render();const cs=$("#csort");if(cs)cs.value=S.sort};
+if("serviceWorker" in navigator&&location.protocol==="https:") navigator.serviceWorker.register("sw.js").catch(()=>{});
+render();
+</script>
+</body>
+</html>
