@@ -159,9 +159,10 @@ const LAYOUTS = [
   {id:"3x3",rows:3,cols:3,label:"9-pocket"},
   {id:"3x4",rows:3,cols:4,label:"12-pocket"}
 ];
-const CARD_W = 440, CARD_H = Math.round(440*88/63); // 63×88 mm card ratio
+let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
+const APP_VERSION = "v4";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
-const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"ocr",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:4,layout:"3x3",binder:"Binder 1"};
+const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"ocr",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){toast("Couldn't save: storage full or blocked")}}
 const S = {
@@ -215,9 +216,7 @@ async function bySetNum(set,num,lang){
   return c||sf(`/cards/${set}/${num}`);
 }
 async function prints(card){
-  const q=`oracleid:${card.oracle} unique:prints`;
-  const r=await sf("/cards/search?order=released&dir=desc&q="+encodeURIComponent(q));
-  return (r?.data||[]).filter(c=>c.games?.includes("paper")).map(slim);
+  return (await printsRaw(card.oracle)).map(slim);
 }
 function priceOf(e,foil=e.foil){ if(e.override!=null) return e.override; return foil?e.eurFoil:e.eur }
 function cmLink(e){
@@ -232,7 +231,7 @@ function cmLink(e){
 function fileToCanvas(file){
   return new Promise((ok,bad)=>{
     const img=new Image(); const url=URL.createObjectURL(file);
-    img.onload=()=>{const max=2400,s=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+    img.onload=()=>{const max=4000,s=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
       const c=document.createElement("canvas");c.width=Math.round(img.naturalWidth*s);c.height=Math.round(img.naturalHeight*s);
       c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);ok(c)};
     img.onerror=()=>{URL.revokeObjectURL(url);bad(new Error("That file isn't an image this browser can open."))};
@@ -257,10 +256,13 @@ function warpPage(src,corners,rows,cols){
   const out=document.createElement("canvas");out.width=W;out.height=H;
   const octx=out.getContext("2d"), od=octx.createImageData(W,H), o=od.data;
   for(let y=0;y<H;y++){const v=(y+.5)/H;for(let x=0;x<W;x++){
-    let [sx,sy]=map((x+.5)/W,v); sx=sx|0; sy=sy|0;
-    const oi=(y*W+x)*4;
-    if(sx<0||sy<0||sx>=sw||sy>=sh){o[oi+3]=255;continue}
-    const si=(sy*sw+sx)*4;o[oi]=sd[si];o[oi+1]=sd[si+1];o[oi+2]=sd[si+2];o[oi+3]=255}}
+    let [fx,fy]=map((x+.5)/W,v); fx-=.5; fy-=.5;
+    const oi=(y*W+x)*4; o[oi+3]=255;
+    const x0=Math.floor(fx),y0=Math.floor(fy);
+    if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
+    const ax=fx-x0,ay=fy-y0,i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4;
+    for(let k=0;k<3;k++) o[oi+k]=(sd[i00+k]*(1-ax)+sd[i10+k]*ax)*(1-ay)+(sd[i01+k]*(1-ax)+sd[i11+k]*ax)*ay;
+  }}
   octx.putImageData(od,0,0);return out;
 }
 function cropCell(page,r,c,insetPct){
@@ -269,13 +271,20 @@ function cropCell(page,r,c,insetPct){
   out.getContext("2d").drawImage(page,c*CARD_W+ix,r*CARD_H+iy,CARD_W-2*ix,CARD_H-2*iy,0,0,CARD_W,CARD_H);return out;
 }
 // Region of a card → enlarged high-contrast canvas for OCR
-function region(cell,x0,y0,x1,y1,scale=3){
+function region(cell,x0,y0,x1,y1,scale=2,mode="plain"){
   const w=(x1-x0)*cell.width,h=(y1-y0)*cell.height;
   const c=document.createElement("canvas");c.width=Math.round(w*scale);c.height=Math.round(h*scale);
   const x=c.getContext("2d");x.imageSmoothingQuality="high";x.drawImage(cell,x0*cell.width,y0*cell.height,w,h,0,0,c.width,c.height);
   const id=x.getImageData(0,0,c.width,c.height),d=id.data;let sum=0;
   for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];d[i]=d[i+1]=d[i+2]=g;sum+=g}
   const mean=sum/(d.length/4), inv=mean<115;
+  if(mode==="bin"){ // Otsu threshold, text forced dark on white
+    const hist=new Array(256).fill(0),n=d.length/4;for(let i=0;i<d.length;i+=4)hist[d[i]|0]++;
+    let sumAll=0;for(let t=0;t<256;t++)sumAll+=t*hist[t];
+    let wB=0,sB=0,best=0,th=128;for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist[t];
+      const mB=sB/wB,mF=(sumAll-sB)/wF,b=wB*wF*(mB-mF)**2;if(b>best){best=b;th=t}}
+    for(let i=0;i<d.length;i+=4){let g=d[i]>th?255:0;if(inv)g=255-g;d[i]=d[i+1]=d[i+2]=g}
+  } else
   for(let i=0;i<d.length;i+=4){let g=d[i];if(inv)g=255-g;g=Math.max(0,Math.min(255,(g-128)*1.6+150));d[i]=d[i+1]=d[i+2]=g}
   x.putImageData(id,0,0);return c;
 }
@@ -295,55 +304,151 @@ function dice(a,b){a=a.toLowerCase().replace(/[^a-z]/g,"");b=b.toLowerCase().rep
   const m=new Map();for(let i=0;i<a.length-1;i++){const k=a.slice(i,i+2);m.set(k,(m.get(k)||0)+1)}
   let n=0;for(let i=0;i<b.length-1;i++){const k=b.slice(i,i+2),v=m.get(k);if(v){n++;m.set(k,v-1)}}return 2*n/(a.length+b.length-2)}
 const LANGS={EN:"en",DE:"de",FR:"fr",IT:"it",ES:"es",PT:"pt",JA:"ja",JP:"ja",KO:"ko",RU:"ru",CS:"zhs",CT:"zht"};
+const stripZ=n=>String(n||"").replace(/^0+(?=\d)/,"").toLowerCase();
+// Cards sit loose in binder pockets, so nothing assumes an exact position:
+// read the whole top band for the name and the whole bottom band for the set line.
+const DIGITFIX={O:"0",Q:"0",D:"0",I:"1",L:"1","|":"1",T:"1",S:"5",B:"8",Z:"2"};
+const fixNum=t=>t.replace(/[OQDILT|SBZ]/g,ch=>DIGITFIX[ch]).replace(/^0+(?=\d)/,"");
+let SETS=null; // real set codes from Scryfall, cached for a week
+async function loadSets(){
+  if(SETS) return SETS;
+  const c=load("binderscan.sets",null);
+  if(c&&Date.now()-c.t<7*864e5){SETS=new Set(c.codes);return SETS}
+  try{const r=await sf("/sets");SETS=new Set((r?.data||[]).map(x=>x.code.toUpperCase()));save("binderscan.sets",{t:Date.now(),codes:[...SETS]})}catch{SETS=new Set()}
+  return SETS;
+}
+function parseFoot(text,sets=SETS||new Set()){
+  const lines=text.toUpperCase().split("\n").map(l=>l.trim()).filter(Boolean);
+  let num=null,set=null,lang=null,m;
+  // number: "123/280", "R 0123" / "R0123", "0123 R" — search bottom-up
+  for(let i=lines.length-1;i>=0&&!num;i--){const t=lines[i];
+    if(/WIZARD|COAST|©|™|SQUARE|ENIX|\b(?:19|20)\d\d\b/.test(t)&&!/\//.test(t)) continue; // copyright lines
+    if((m=t.match(/([0-9OQDILT|]{2,4})\s*\/\s*[0-9OQDILT|]{2,4}/))&&/\d/.test(m[1])) num=fixNum(m[1]);
+    else if((m=t.match(/\b[CURMLST]\s*([0-9OQDILT|]{3,4})\b/))&&/\d{2}/.test(m[1])) num=fixNum(m[1]);
+    else if((m=t.match(/\b([0-9OQDILT|]{3,4})\s+[CURMLST]\b/))&&/\d{2}/.test(m[1])) num=fixNum(m[1]);
+    if(num&&!/^\d+$/.test(num)) num=null;
+  }
+  // set: a real set code, preferably right before the language tag ("BRO • EN", "FIN SEN"), bottom-up
+  let fallback=null;
+  for(let i=lines.length-1;i>=Math.max(0,lines.length-8)&&!set;i--){
+    const toks=[...lines[i].matchAll(/([A-Z0-9]{3,5})(?=[^A-Z0-9]{0,3}S?(EN|DE|FR|IT|ES|PT|JA|JP|KO|RU)\b)/g)];
+    for(const t of toks) if(sets.has(t[1])&&/[A-Z]/.test(t[1])){set=t[1];lang=LANGS[t[2]];break}
+    if(!fallback) for(const t of lines[i].matchAll(/\b([A-Z][A-Z0-9]{2,4})\b/g)) if(sets.has(t[1])&&!/^(ONE|WAR|CON|MID|THE|AND|CMD|TOP|ALL|ICE|NEW|OLD|SUN)$/.test(t[1])){fallback=t[1];break}
+  }
+  return {set:set||fallback,num,lang};
+}
+function nameCandidates(text){
+  const lines=text.split("\n").map(l=>clean(l).replace(/^[^\p{L}]+|[^\p{L}']+$/gu,"")).filter(l=>(l.match(/\p{L}/gu)||[]).length>=4);
+  const out=[];
+  for(let i=0;i<lines.length&&out.length<6;i++){
+    if(!out.includes(lines[i])) out.push(lines[i]);
+    if(lines[i+1]){const j=lines[i]+" "+lines[i+1];if(j.length<=40) out.push(j)} // names that wrap or break into two OCR lines
+  }
+  return out.slice(0,6);
+}
 async function ocrCell(cell){
-  const w=await getOcr();
-  await w.setParameters({tessedit_pageseg_mode:"7"});
-  const nameR=await w.recognize(region(cell,.075,.04,.80,.10));
-  await w.setParameters({tessedit_pageseg_mode:"6"});
-  const footR=await w.recognize(region(cell,.035,.905,.45,.975));
-  const name=clean(nameR.data.text||"");
-  const foot=(footR.data.text||"").toUpperCase().replace(/[^\w\/•·*. \n-]/g," ");
-  let num=null,set=null,lang=null;
-  const m1=foot.match(/\b0*(\d{1,4})\s*\/\s*\d{1,4}/)||foot.match(/\b0*(\d{1,4})[A-Z]?\s+[CURMLSTP]\b/);
-  if(m1) num=m1[1];
-  const m2=foot.match(/\b([A-Z0-9]{3,5})\s*[•·*.\-]?\s*(EN|DE|FR|IT|ES|PT|JA|JP|KO|RU|CS|CT)\b/);
-  if(m2){set=m2[1];lang=LANGS[m2[2]]}
-  return {name,set,num,lang};
+  const w=await getOcr(); await loadSets();
+  await w.setParameters({tessedit_pageseg_mode:"11"});
+  const top=await w.recognize(region(cell,0,0,1,.3,1000/cell.width,"plain"));
+  const bot=await w.recognize(region(cell,0,.62,1,1,1700/cell.width,"plain"));
+  let f=parseFoot(bot.data.text||"");
+  if(!f.set||!f.num){const bot2=await w.recognize(region(cell,0,.62,1,1,1700/cell.width,"bin"));const g=parseFoot(bot2.data.text||"");f={set:f.set||g.set,num:f.num||g.num,lang:f.lang||g.lang}}
+  return {names:nameCandidates(top.data.text||""),...f};
 }
 async function identifyOcr(cell){
   const o=await ocrCell(cell);
-  let card=null,status="none";
+  const read=[o.names[0]||"no name read",o.set?o.set+(o.num?" #"+o.num:""):""].filter(Boolean).join(" · ");
+  let card=null,score=0;
   if(o.set&&o.num){
     try{const c=await bySetNum(o.set,o.num,o.lang);
-      if(c&&(o.name.length<3||dice(o.name,c.printed_name||c.name)>.45||dice(o.name,c.name)>.45)){card=c;status="matched"}}catch{}
+      if(c){const sc=Math.max(0,...o.names.map(n=>Math.max(dice(n,c.name),dice(n,c.printed_name||""))));
+        if(!o.names.length||sc>.4){card=c;score=1}}}catch{}
   }
-  if(!card&&o.name.length>=3){
-    try{const c=await byName(o.name);if(c){card=c;status="guess"}}catch{}
+  if(!card){
+    for(const n of o.names){try{const c=await byName(n);if(c){const sc=Math.max(dice(n,c.name),dice(n,c.printed_name||""));if(sc>score){card=c;score=sc}}}catch{}
+      if(score>.85) break}
+    if(card&&score<.45) card=null; // OCR noise that happened to fuzzy-match something
   }
-  return {ocr:o.name||"(no text found)",card,status};
+  if(!card) return {ocr:o.names.length||o.set?read:"Empty pocket or unreadable",card:null,status:"none"};
+  const v=await chooseVersion(cell,card,{set:o.set,num:o.num});
+  return {ocr:read,card:v.card,status:v.sure?"matched":"guess"};
+}
+
+/* ===================== version picking by artwork ===================== */
+// Compares the art box of your photo with each printing's art, then uses the set code / number to break ties.
+const printCache=new Map(), artCache=new Map();
+async function printsRaw(oracle){
+  if(printCache.has(oracle)) return printCache.get(oracle);
+  let r=await sf("/cards/search?order=released&dir=desc&unique=prints&q="+encodeURIComponent(`oracleid:${oracle} game:paper`));
+  const list=r?.data||[];
+  printCache.set(oracle,list);return list;
+}
+const VW=12,VH=17;
+const vctx=(()=>{const c=document.createElement("canvas");c.width=VW;c.height=VH;return c.getContext("2d",{willReadFrequently:true})})();
+function vecOf(src,sx,sy,sw,sh){
+  vctx.drawImage(src,sx,sy,sw,sh,0,0,VW,VH);
+  const d=vctx.getImageData(0,0,VW,VH).data,n=VW*VH,v=new Float32Array(n*3);
+  for(let ch=0;ch<3;ch++){let m=0;for(let i=0;i<n;i++)m+=d[i*4+ch];m/=n;for(let i=0;i<n;i++)v[ch*n+i]=d[i*4+ch]-m}
+  let q=0;for(const a of v)q+=a*a;q=Math.sqrt(q)||1;for(let i=0;i<v.length;i++)v[i]/=q;return v;
+}
+// Whole-card vectors at many positions/sizes inside the pocket, since the card can sit anywhere in it.
+function pocketVecs(cell){
+  const out=[],W=cell.width,H=cell.height;
+  for(const s of [.72,.78,.84,.9,.96,1]){
+    let w=W*s,h=w*88/63; if(h>H){h=H;w=h*63/88}
+    for(let i=0;i<7;i++)for(let j=0;j<7;j++) out.push(vecOf(cell,(W-w)*i/6,(H-h)*j/6,w,h));
+  }
+  return out;
+}
+const loadImg=url=>new Promise((ok,bad)=>{const i=new Image();i.crossOrigin="anonymous";i.onload=()=>ok(i);i.onerror=bad;i.src=url});
+async function artOf(card){
+  const url=card.image_uris?.small||card.card_faces?.[0]?.image_uris?.small; if(!url) return null;
+  if(artCache.has(url)) return artCache.get(url);
+  const img=await loadImg(url); const v=vecOf(img,0,0,img.naturalWidth,img.naturalHeight); artCache.set(url,v); return v;
+}
+async function chooseVersion(cell,card,hint={}){
+  let list;try{list=await printsRaw(card.oracle_id)}catch{list=[]}
+  if(!list.length) return {card,sure:false};
+  if(list.length===1) return {card:list[0],sure:true};
+  const hs=(hint.set||"").toLowerCase(), hn=stripZ(hint.num);
+  if(hs&&hn){const h=list.find(p=>p.set===hs&&stripZ(p.collector_number)===hn);if(h) return {card:card.set===hs?card:h,sure:true}}
+  const groups=new Map();for(const p of list.slice(0,60)){const k=(p.illustration_id||p.id)+"|"+(p.frame||"")+(p.full_art?"F":"")+(p.border_color||"")+((p.frame_effects||[]).join());if(!groups.has(k))groups.set(k,[]);groups.get(k).push(p)}
+  let scored;
+  try{
+    const targets=pocketVecs(cell);
+    scored=await Promise.all([...groups.values()].map(async ps=>{const v=await artOf(ps[0]);let s=-1;
+      if(v)for(const t of targets){let d=0;for(let i=0;i<v.length;i++)d+=v[i]*t[i];if(d>s)s=d}return {ps,s}}));
+  }catch{return {card,sure:false}} // images blocked: keep name match, ask user to check
+  scored.sort((a,b)=>b.s-a.s);
+  const best=scored[0],margin=best.s-(scored[1]?.s??-1);
+  let pick=best.ps.find(p=>hs&&p.set===hs)||best.ps.find(p=>hn&&stripZ(p.collector_number)===hn)||best.ps[0];
+  const sure=best.s>.6&&margin>.08&&(best.ps.length===1||pick.set===hs);
+  return {card:pick,sure};
 }
 
 /* ===================== recognition: Claude vision (optional key) ===================== */
-async function identifyClaude(page,rows,cols){
-  const s=Math.min(1,1568/Math.max(page.width,page.height));
-  const c=document.createElement("canvas");c.width=Math.round(page.width*s);c.height=Math.round(page.height*s);
-  c.getContext("2d").drawImage(page,0,0,c.width,c.height);
-  const data=c.toDataURL("image/jpeg",.85).split(",")[1];
-  const prompt=`This image is a ${rows}×${cols} grid of Magic: The Gathering card pockets from a binder page, flattened and cropped. For every cell, read the card. Return ONLY JSON: {"cards":[{"row":1,"col":1,"empty":false,"name":"English card name","printed_name":"name as printed if not English","set_code":"3-5 letter set code from the bottom-left if readable","collector_number":"digits if readable","language":"en|de|fr|it|es|pt|ja|...","foil":false}]}. Rows and cols are 1-based, row 1 at the top. Use null for anything unreadable. Mark empty pockets with "empty":true. "foil" is true only if the card clearly shows a foil sheen.`;
+async function identifyClaude(cells){
+  const content=[];
+  cells.forEach((x,i)=>{const c=document.createElement("canvas");c.width=600;c.height=Math.round(600*CARD_H/CARD_W);c.getContext("2d").drawImage(x.cv,0,0,c.width,c.height);
+    content.push({type:"text",text:`Card ${i+1} (row ${x.r+1}, col ${x.c+1}):`},{type:"image",source:{type:"base64",media_type:"image/jpeg",data:c.toDataURL("image/jpeg",.88).split(",")[1]}})});
+  content.push({type:"text",text:`Each image is one binder pocket holding a Magic: The Gathering card (or empty). For every card read the name and, most importantly, the tiny set code and collector number printed at the bottom-left (e.g. "0123 R" over "MOM • EN", or "123/280"). Return ONLY JSON: {"cards":[{"index":1,"empty":false,"name":"English card name","printed_name":"name as printed","set_code":"set code or null","collector_number":"number or null","language":"en|de|fr|it|es|pt|ja|...","foil":false}]}. Use null when you cannot read a field; never guess a set code. "foil" is true only if a foil sheen is clearly visible.`});
   const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{
     "content-type":"application/json","x-api-key":S.settings.apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-    body:JSON.stringify({model:S.settings.model,max_tokens:3000,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:"image/jpeg",data}},{type:"text",text:prompt}]}]})});
+    body:JSON.stringify({model:S.settings.model,max_tokens:3000,messages:[{role:"user",content}]})});
   if(!res.ok){const t=await res.text();throw new Error(res.status===401?"Claude rejected the API key. Check it in Settings.":"Claude request failed ("+res.status+"): "+t.slice(0,140))}
   const j=await res.json(); const txt=(j.content||[]).map(b=>b.text||"").join("");
-  const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error("Claude didn't return a card list. Try again or switch to on-device OCR.");
+  const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error("Claude didn't return a card list.");
   return JSON.parse(m[0]).cards||[];
 }
-async function resolveClaude(x){
+async function resolveClaude(x,cell){
   if(!x||x.empty) return {ocr:"Empty pocket",card:null,status:"none",empty:true};
-  let card=null,status="none";
-  if(x.set_code&&x.collector_number){try{card=await bySetNum(x.set_code,x.collector_number,x.language);if(card)status="matched"}catch{}}
-  if(!card&&x.name){try{card=await byName(x.name);if(card)status="guess"}catch{}}
-  return {ocr:x.printed_name||x.name||"(unreadable)",card,status,foil:!!x.foil};
+  const read=[x.printed_name||x.name||"unreadable",x.set_code?x.set_code+(x.collector_number?" #"+x.collector_number:""):""].filter(Boolean).join(" · ");
+  let card=null;
+  if(x.set_code&&x.collector_number){try{const c=await bySetNum(x.set_code,x.collector_number,x.language);if(c&&(!x.name||dice(x.name,c.name)>.4))card=c}catch{}}
+  if(!card&&x.name){try{card=await byName(x.name)}catch{}}
+  if(!card) return {ocr:read,card:null,status:"none"};
+  const v=await chooseVersion(cell,card,{set:x.set_code,num:x.collector_number});
+  return {ocr:read,card:v.card,status:v.sure?"matched":"guess",foil:!!x.foil};
 }
 
 /* ===================== scan flow ===================== */
@@ -358,19 +463,22 @@ async function runScan(){
   const {rows,cols}=layout(); const sc=S.scan; if(!sc) return;
   S.scanning=true;S.progress=0;render();
   try{
+    // keep the photo's native detail: cell width follows the source resolution (680–1100 px)
+    const qw=Math.max(Math.hypot(sc.corners[1][0]-sc.corners[0][0],sc.corners[1][1]-sc.corners[0][1]),Math.hypot(sc.corners[2][0]-sc.corners[3][0],sc.corners[2][1]-sc.corners[3][1]));
+    CARD_W=Math.round(Math.max(680,Math.min(1100,qw/cols)));CARD_H=Math.round(CARD_W*88/63);
     const page=warpPage(sc.img,sc.corners,rows,cols);
     const cells=[];for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)cells.push({r,c,cv:cropCell(page,r,c,S.settings.inset)});
-    S.review=cells.map(x=>({key:uid(),r:x.r,c:x.c,thumb:thumb(x.cv),nameCrop:thumb(region(x.cv,.05,.03,.95,.11,1),200),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}));
+    S.review=cells.map(x=>({key:uid(),r:x.r,c:x.c,thumb:thumb(x.cv),big:thumb(x.cv,520),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}));
     render();
     let claude=null;
     if(S.settings.engine==="claude"&&S.settings.apiKey){
       setProgress(.15,"Asking Claude to read the page…");
-      try{claude=await identifyClaude(page,rows,cols)}catch(e){toast(e.message+" Falling back to on-device OCR.")}
+      try{claude=await identifyClaude(cells)}catch(e){toast(e.message+" Falling back to on-device OCR.")}
     }
     for(let i=0;i<cells.length;i++){
       const it=S.review[i]; let res;
       try{
-        if(claude){res=await resolveClaude(claude.find(k=>k.row===cells[i].r+1&&k.col===cells[i].c+1))}
+        if(claude){setProgress(i/cells.length,`Matching card ${i+1} of ${cells.length}…`);res=await resolveClaude(claude.find(k=>+k.index===i+1),cells[i].cv)}
         else{setProgress(i/cells.length,`Reading card ${i+1} of ${cells.length}…`);res=await identifyOcr(cells[i].cv)}
       }catch(e){res={ocr:"Error: "+e.message,card:null,status:"none"}}
       it.ocr=res.ocr;it.status=res.status;it.card=res.card?slim(res.card):null;
@@ -414,22 +522,31 @@ function pickVersion(target,onPick){
     }catch(e){body.innerHTML=`<p>Couldn't load printings: ${esc(e.message)}</p>`}
   });
 }
-function manualSearch(initial,onPick){
-  sheet("Find card",`<input type="search" id="ms-q" placeholder="Card name (English)" value="${esc(initial||"")}" autocomplete="off"><div id="ms-res" class="list"></div>`,(body,close)=>{
-    const q=$("#ms-q",body),out=$("#ms-res",body);let t;
-    const go=async()=>{const v=q.value.trim();if(v.length<2){out.innerHTML="";return}
-      try{const r=await sf("/cards/autocomplete?q="+encodeURIComponent(v));
-        out.innerHTML=(r?.data||[]).slice(0,12).map(n=>`<button class="btn" style="justify-content:flex-start" data-n="${esc(n)}">${esc(n)}</button>`).join("")||`<p class="muted">No card names match "${esc(v)}".</p>`}catch(e){out.innerHTML=`<p>${esc(e.message)}</p>`}};
-    q.oninput=()=>{clearTimeout(t);t=setTimeout(go,250)};go();setTimeout(()=>q.focus(),50);
-    out.onclick=async e=>{const b=e.target.closest("[data-n]");if(!b)return;const c=await sf("/cards/named?exact="+encodeURIComponent(b.dataset.n));if(c){onPick(slim(c));close()}};
+const SETNUM=/^([a-z0-9]{3,5})\s*[#\-\/ ]\s*0*(\d{1,4}[a-z★]?)$/i;
+function manualSearch(initial,onPick,photo){
+  sheet("Find card",`${photo?`<img src="${photo}" alt="Your photo of this pocket" style="width:100%;max-width:320px;align-self:center;border-radius:8px">`:""}
+    <input type="search" id="ms-q" placeholder="Name, or set + number like FIN 519" value="${esc(initial||"")}" autocomplete="off" autocapitalize="off">
+    <p class="hint">Fastest: type the set code and number from the card's bottom-left corner, e.g. <span class="mono">fin 519</span>. That gives the exact version.</p>
+    <div id="ms-res" class="list"></div>`,(body,close)=>{
+    const q=$("#ms-q",body),out=$("#ms-res",body);let t,seq=0;
+    const go=async()=>{const v=q.value.trim(),my=++seq;if(v.length<2){out.innerHTML="";return}
+      try{
+        const m=v.match(SETNUM);
+        if(m){const c=await bySetNum(m[1],m[2]);if(my!==seq)return;
+          if(c){const p=slim(c);out.innerHTML=printRow(p,"",false);out.onclick=e=>{if(e.target.closest(".pr")){onPick(p);close()}};return}}
+        const r=await sf("/cards/autocomplete?q="+encodeURIComponent(v));if(my!==seq)return;
+        out.onclick=async e=>{const b=e.target.closest("[data-n]");if(!b)return;const c=await sf("/cards/named?exact="+encodeURIComponent(b.dataset.n));
+          if(c){const p=slim(c);onPick(p);close();toast("Name found. Tap Version to pick the exact printing.")}};
+        out.innerHTML=(r?.data||[]).slice(0,12).map(n=>`<button class="btn" style="justify-content:flex-start" data-n="${esc(n)}">${esc(n)}</button>`).join("")||`<p class="muted">Nothing matches "${esc(v)}". For set + number, use the format FIN 519.</p>`;
+      }catch(e){out.innerHTML=`<p>${esc(e.message)}</p>`}};
+    q.oninput=()=>{clearTimeout(t);t=setTimeout(go,300)};go();setTimeout(()=>q.focus(),50);
   });
 }
-
 /* ===================== render ===================== */
 const pocketsIcon=(r,c)=>`<span class="pockets" style="grid-template-columns:repeat(${c},9px)">${"<i></i>".repeat(r*c)}</span>`;
 function render(){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.setAttribute("aria-current",b.dataset.tab===S.tab?"page":"false"));
-  $("#hdr-sub").textContent=`MTG · Cardmarket · ${S.settings.country}`;
+  $("#hdr-sub").textContent=`${APP_VERSION} · ${S.settings.country}`;
   const m=$("#main");
   if(S.tab==="scan") m.innerHTML=viewScan();
   else if(S.tab==="collection") m.innerHTML=viewCollection();
@@ -457,6 +574,7 @@ function viewScan(){
       <div class="row"><button class="btn" id="ed-rot">Rotate</button><button class="btn" id="ed-reset">Reset corners</button><button class="btn ghost" id="ed-retake">Retake</button></div>
       <button class="btn primary" id="ed-scan">Scan ${L.rows*L.cols} card${L.rows*L.cols>1?"s":""}</button>
       <p class="hint mono">Recognition: ${S.settings.engine==="claude"&&S.settings.apiKey?"Claude vision":"on-device OCR"} · saving to ${esc(S.settings.binder)}</p>
+      ${S.settings.engine==="claude"&&S.settings.apiKey?"":`<p class="hint">On-device OCR misses foils, full-art and glare-heavy cards. For full binder pages, switch to Claude vision in Settings.</p>`}
     </section>`;
   }
   return `<section class="view">
@@ -484,6 +602,7 @@ function renderReview(){
           <div class="meta">${c?`${esc(c.set.toUpperCase())} #${esc(c.num)} · <span class="rar-${c.rarity}">${esc(c.rarity)}</span>${c.lang!=="en"?" · "+esc(c.lang.toUpperCase()):""}`:"&nbsp;"}</div>
         </div><div style="text-align:right"><div class="price">${c?eur(p):""}</div><span class="pos">R${it.r+1}·C${it.c+1}</span></div></div>
         <div class="row" style="gap:6px"><span class="status ${it.status}">${{matched:"Exact match",guess:"Check version",none:"Not found",pending:"Reading"}[it.status]}</span>${c&&c.setName?`<span class="meta" style="font-family:var(--f-ui)">${esc(c.setName)}</span>`:""}</div>
+        ${it.ocr&&it.status!=="pending"?`<div class="meta">Read: ${esc(it.ocr)}</div>`:""}
         ${it.status==="pending"?"":`<div class="chips">
           ${c?`<button class="chip foil" data-act="foil" aria-pressed="${it.foil}" ${canFoil?"":"disabled title=\"Only one finish exists\""}>✦ Foil</button>
           <button class="chip ${it.status==="guess"?"warn":""}" data-act="ver">Version</button>`:""}
@@ -639,7 +758,7 @@ document.addEventListener("click",e=>{
       case "dec": it.qty=Math.max(1,it.qty-1);break;
       case "inc-toggle": it.include=!it.include;break;
       case "ver": return pickVersion({...it.card,foil:it.foil},p=>{it.card=p;it.status="matched";if(!p.finishes.includes(it.foil?"foil":"nonfoil"))it.foil=!it.foil;renderReview()});
-      case "search": return manualSearch(it.card?.name||(it.ocr.startsWith("(")?"":it.ocr),p=>{it.card=p;it.status="guess";it.include=true;it.foil=!p.finishes.includes("nonfoil");renderReview()});
+      case "search": return manualSearch("",p=>{it.card=p;it.status="matched";it.include=true;it.foil=!p.finishes.includes("nonfoil");renderReview()},it.big);
     }
     renderReview();
   }
