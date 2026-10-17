@@ -16,6 +16,9 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
       - name: Fetch cards and images
         env:
           IDS: ${{ inputs.ids }}
@@ -49,9 +52,11 @@ jobs:
           PY
       - name: Commit to diag branch
         run: |
-          cd out
-          git init -q -b diag
+          cd repo
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan diag
+          git rm -rfq .
+          cp -r ../out/. .
           git add -A && git commit -q -m "Diagnostics data"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" diag
+          git push -f origin diag
