@@ -161,7 +161,7 @@ const LAYOUTS = [
   {id:"3x4",rows:3,cols:4,label:"12-pocket"}
 ];
 let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
-const APP_VERSION = "v7";
+const APP_VERSION = "v8";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
@@ -483,7 +483,7 @@ async function resolveClaude(x,cell){
 /* ===================== recognition: artwork matching (default) ===================== */
 // Each card is compared with a hash of every printing on Scryfall (data/index.bin, built by the
 // "Build card index" GitHub Action), then the closest candidates are re-checked against their real images.
-const TOPK=20, WEAK_D=40, NONE_D=48;
+const TOPK=20, WEAK_D=36, NONE_D=44;
 let IDX=null;
 async function loadIndex(){
   if(IDX) return IDX;
@@ -579,25 +579,21 @@ function cardRects(cv){
 }
 async function vecUrl(url){if(artCache.has(url))return artCache.get(url);const img=await loadImg(url);const v=vecOf(img,0,0,img.naturalWidth,img.naturalHeight);artCache.set(url,v);return v}
 const matchPct=d=>Math.round(100*Math.max(0,Math.min(1,(64-d)/40)));
+// regular set printings first: promos and stamped/variant numbers (e.g. 21s, 17p, 745z) only win when they match clearly better
+const isPromo=c=>c.set_type==="promo"||c.promo===true||/[^\d]/.test(c.collector_number||"")||(/^p[a-z0-9]{3}$/.test(c.set||"")&&c.set_type!=="core"&&c.set_type!=="expansion");
 async function rerank(p,raw){
-  let qv=null;try{qv=p.rects.map(r=>vecOf(p.cv,r.x,r.y,r.w,r.h))}catch{}
-  const cands=[];
-  for(const t of p.top){const c=raw.get(t.id);if(!c)continue;
-    const url=t.back?c.card_faces?.[1]?.image_uris?.small:(c.image_uris?.small||c.card_faces?.[0]?.image_uris?.small);
-    let cos=null;
-    if(qv&&url){try{const v=await vecUrl(url);cos=-1;for(const q of qv){let s=0;for(let k=0;k<v.length;k++)s+=v[k]*q[k];if(s>cos)cos=s}}catch{}}
-    cands.push({c,d:t.d,cos,score:(cos??0)-.6*t.d/128});
-  }
-  if(!cands.length) return{status:"none",card:null,ocr:"No match"};
-  const useCos=cands.some(x=>x.cos!=null);
-  cands.sort((a,b)=>useCos?b.score-a.score:a.d-b.d);
-  const b=cands[0],dmin=Math.min(...cands.map(x=>x.d));
-  if((dmin>NONE_D&&(b.cos??0)<.8)||(useCos&&b.cos<.45)) return{status:"none",card:null,ocr:"No match (empty pocket?)"};
+  const cands=p.top.map(t=>({c:raw.get(t.id),d:t.d})).filter(x=>x.c).sort((x,y)=>x.d-y.d);
+  if(!cands.length||cands[0].d>NONE_D) return{status:"none",card:null,ocr:"No match (empty pocket?)"};
+  const dmin=cands[0].d, lead=cands[0].c;
+  // printings of the same card that match about as well as the best one
+  const same=cands.filter(x=>x.d<=dmin+4&&x.c.oracle_id===lead.oracle_id);
+  const sameArt=same.filter(x=>!lead.illustration_id||x.c.illustration_id===lead.illustration_id);
+  const pick=(sameArt.find(x=>!isPromo(x.c)&&x.d<=dmin+2)||sameArt[0]).c;
+  const rival=cands.find(x=>x.c.oracle_id!==lead.oracle_id);
   let status="matched";
-  if(b.d>WEAK_D||(useCos&&b.cos<.6)) status="weak";
-  else{const r=cands.find(x=>x.c.id!==b.c.id);
-    if(r&&r.c.oracle_id===b.c.oracle_id&&(useCos?b.score-r.score<.03:r.d-b.d<3)) status="guess"}
-  return{status,card:slim(b.c),ocr:`Artwork match ${matchPct(b.d)}%`};
+  if(dmin>WEAK_D||(rival&&rival.d-dmin<3)) status="weak";
+  else if(same.length>1) status="guess";
+  return{status,card:slim(pick),ocr:`Artwork match ${matchPct(dmin)}%`};
 }
 async function matchCells(cells){
   setProgress(.02,"Loading card database…");
