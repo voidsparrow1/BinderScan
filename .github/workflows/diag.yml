@@ -1,0 +1,57 @@
+name: Diagnostics - fetch card data
+
+# Helper for debugging recognition: fetches names and small images for a list of
+# Scryfall card ids and commits them to the separate "diag" branch (main is untouched).
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: "Comma-separated Scryfall card ids"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch cards and images
+        env:
+          IDS: ${{ inputs.ids }}
+        run: |
+          mkdir -p out/img && cd out
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+          UA = {"User-Agent": "BinderScan-diagnostics/1.0", "Accept": "application/json;q=0.9,*/*;q=0.8", "Content-Type": "application/json"}
+          ids = [i.strip() for i in os.environ["IDS"].split(",") if i.strip()]
+          cards = []
+          for k in range(0, len(ids), 75):
+              body = json.dumps({"identifiers": [{"id": i} for i in ids[k:k + 75]]}).encode()
+              req = urllib.request.Request("https://api.scryfall.com/cards/collection", data=body, headers=UA)
+              cards += json.load(urllib.request.urlopen(req, timeout=60))["data"]
+              time.sleep(0.2)
+          slim = {}
+          for c in cards:
+              faces = [c.get("image_uris")] if c.get("image_uris") else [f.get("image_uris") for f in c.get("card_faces", [])]
+              slim[c["id"]] = {"name": c["name"], "set": c["set"], "num": c["collector_number"], "oracle_id": c.get("oracle_id"),
+                               "frame_effects": c.get("frame_effects", []), "border": c.get("border_color"), "full_art": c.get("full_art"),
+                               "finishes": c.get("finishes"), "faces": len([f for f in faces if f])}
+              for n, f in enumerate(faces):
+                  if f and f.get("small"):
+                      try:
+                          data = urllib.request.urlopen(urllib.request.Request(f["small"], headers={"User-Agent": UA["User-Agent"]}), timeout=60).read()
+                          open(f"img/{c['id']}_{n}.jpg", "wb").write(data)
+                      except Exception as e:
+                          print("image failed", c["id"], e)
+          json.dump(slim, open("cards.json", "w"), indent=1)
+          print(f"::notice::fetched {len(slim)} cards")
+          PY
+      - name: Commit to diag branch
+        run: |
+          cd out
+          git init -q -b diag
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -q -m "Diagnostics data"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" diag
