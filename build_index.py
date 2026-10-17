@@ -12,7 +12,7 @@ Index format (little-endian):
 The hash maths must match cardHash() in index.html.
 """
 import concurrent.futures as cf
-import gzip, io, json, os, struct, sys, time, urllib.request, uuid
+import gzip, io, json, os, struct, sys, time, traceback, urllib.request, uuid
 
 import numpy as np
 from PIL import Image
@@ -20,7 +20,7 @@ from PIL import Image
 HN, HM = 128, 176                      # intermediate card size (63:88)
 ART = (0.08, 0.11, 0.92, 0.56)         # art box as fractions: x0, y0, x1, y1
 SKIP_LAYOUTS = {"art_series", "token", "double_faced_token", "emblem", "vanguard", "planar", "scheme"}
-UA = {"User-Agent": "BinderScan-index-builder/1.0 (personal collection app)", "Accept": "*/*"}
+UA = {"User-Agent": "BinderScan-index-builder/1.0 (personal collection app)", "Accept": "application/json;q=0.9,*/*;q=0.8"}
 
 D8 = np.array([[(np.sqrt(1 / 32) if k == 0 else np.sqrt(2 / 32)) * np.cos(np.pi * (2 * n + 1) * k / 64)
                 for n in range(32)] for k in range(8)], dtype=np.float64)
@@ -72,6 +72,11 @@ def fetch(url, tries=4, timeout=60):
             time.sleep(2 * (t + 1))
 
 
+def note(msg):
+    """Progress line that also shows up as an annotation on the workflow run."""
+    print(f"::notice title=build_index::{msg}", flush=True)
+
+
 def save_cache(cache, path):
     tmp = path + ".tmp"
     with gzip.open(tmp, "wt") as f:
@@ -90,7 +95,7 @@ def main():
     if os.path.exists(cache_path):
         with gzip.open(cache_path, "rt") as f:
             cache = json.load(f)
-    print("cached hashes:", len(cache), flush=True)
+    note(f"cached hashes: {len(cache)}")
 
     bulk = json.loads(fetch("https://api.scryfall.com/bulk-data"))
     uri = next(b["download_uri"] for b in bulk["data"] if b["type"] == "default_cards")
@@ -115,7 +120,7 @@ def main():
                         entries.append((c["id"], i, face["image_uris"]["small"]))
     os.remove(cards_path)
     todo = [e for e in entries if e[2] not in cache]
-    print(f"card images: {len(entries)}, new to hash: {len(todo)}", flush=True)
+    note(f"card images: {len(entries)}, new to hash: {len(todo)}")
 
     def work(e):
         try:
@@ -154,10 +159,17 @@ def main():
             f.write(buf)
         with open(os.path.join(data_dir, "meta.json"), "w") as f:
             json.dump({"version": 1, "count": len(rows), "built": int(time.time())}, f)
-        print(f"index written: {len(rows)} card faces, {len(buf) / 1e6:.1f} MB")
+        note(f"index written: {len(rows)} card faces, {len(buf) / 1e6:.1f} MB")
     else:
-        print("index unchanged")
+        note("index unchanged")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        tb = traceback.format_exc().strip().splitlines()
+        print("\n".join(tb), file=sys.stderr)
+        msg = " | ".join(tb[-4:]).replace("%", "%25").replace("\r", "").replace("\n", " ")
+        print(f"::error title=build_index failed::{msg}", flush=True)
+        sys.exit(1)
