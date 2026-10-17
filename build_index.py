@@ -133,7 +133,10 @@ def main():
             f.write(chunk)
 
     entries = []  # (card id, face, image url)
-    with open(cards_path, "rb") as f:
+    with open(cards_path, "rb") as raw:
+        gz = raw.read(2) == b"\x1f\x8b"
+    note(f"bulk file {os.path.getsize(cards_path) / 1e6:.0f} MB{' (gzip)' if gz else ''}")
+    with (gzip.open(cards_path, "rb") if gz else open(cards_path, "rb")) as f:
         for c in ijson.items(f, "item"):
             if c.get("digital") or "paper" not in (c.get("games") or []):
                 continue
