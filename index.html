@@ -30,6 +30,7 @@
   color-scheme:dark;
 }}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 var(--f-ui);-webkit-tap-highlight-color:transparent}
 button,input,select{font:inherit;color:inherit}
@@ -90,7 +91,7 @@ p{margin:0}
 .chip.warn{color:var(--warn);border-color:currentColor;background:transparent}
 .status{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;border-radius:4px;padding:2px 6px}
 .status.matched{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
-.status.guess{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.status.guess,.status.weak{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
 .status.none{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent)}
 .status.pending{color:var(--muted);background:var(--surface-2)}
 .rar-common{color:var(--r-common)}.rar-uncommon{color:var(--r-uncommon)}.rar-rare{color:var(--r-rare)}.rar-mythic{color:var(--r-mythic)}
@@ -160,9 +161,9 @@ const LAYOUTS = [
   {id:"3x4",rows:3,cols:4,label:"12-pocket"}
 ];
 let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
-const APP_VERSION = "v4";
+const APP_VERSION = "v5";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
-const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"ocr",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
+const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){toast("Couldn't save: storage full or blocked")}}
 const S = {
@@ -176,6 +177,7 @@ const S = {
   q:"",sort:"value"
 };
 const saveColl=()=>save(SK,S.coll), saveSet=()=>save(SK_SET,S.settings);
+if(!S.settings.v5){if(S.settings.engine==="ocr")S.settings.engine="image";S.settings.inset=0;S.settings.v5=true;saveSet()}
 const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
@@ -451,6 +453,151 @@ async function resolveClaude(x,cell){
   return {ocr:read,card:v.card,status:v.sure?"matched":"guess",foil:!!x.foil};
 }
 
+/* ===================== recognition: artwork matching (default) ===================== */
+// Each card is compared with a hash of every printing on Scryfall (data/index.bin, built by the
+// "Build card index" GitHub Action), then the closest candidates are re-checked against their real images.
+const TOPK=20, WEAK_D=40, NONE_D=48;
+let IDX=null;
+async function loadIndex(){
+  if(IDX) return IDX;
+  let meta;
+  try{const r=await fetch("data/meta.json",{cache:"no-store"});if(!r.ok)return null;meta=await r.json()}catch{return null}
+  const key=new URL("data/index.bin?v="+meta.built,location.href).href;
+  let cache=null;try{cache=await caches.open("binderscan-index")}catch{}
+  let res=cache?await cache.match(key):null;
+  if(!res){
+    setProgress(.03,`Downloading card database (${(meta.count*33/1e6).toFixed(1)} MB, first time only)…`);
+    res=await fetch("data/index.bin",{cache:"no-store"});if(!res.ok) return null;
+    if(cache){try{await cache.put(key,res.clone());for(const k of await cache.keys())if(k.url!==key)cache.delete(k)}catch{}}
+  }
+  const buf=await res.arrayBuffer(),dv=new DataView(buf);
+  if(String.fromCharCode(...new Uint8Array(buf,0,4))!=="BSIX") return null;
+  const n=dv.getUint32(8,true);let o=16;
+  const ids=new Uint8Array(buf,o,16*n);o+=16*n;const faces=new Uint8Array(buf,o,n);o+=n;o=(o+3)&~3;
+  IDX={n,ids,faces,H:new Uint32Array(buf,o,4*n),built:meta.built};return IDX;
+}
+function idAt(i){let h="";for(let k=0;k<16;k++){h+=IDX.ids[i*16+k].toString(16).padStart(2,"0");if(k===3||k===5||k===7||k===9)h+="-"}return h}
+const POP=x=>{x-=(x>>>1)&0x55555555;x=(x&0x33333333)+((x>>>2)&0x33333333);return(((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24};
+function searchIndex(qs,K){
+  const H=IDX.H,n=IDX.n,top=[];let worst=999;
+  for(let i=0;i<n;i++){
+    const b=i*4,h0=H[b],h1=H[b+1],h2=H[b+2],h3=H[b+3];let m=999;
+    for(const q of qs){const d=POP(h0^q[0])+POP(h1^q[1])+POP(h2^q[2])+POP(h3^q[3]);if(d<m)m=d}
+    if(m<worst||top.length<K){let j=top.length;while(j>0&&top[j-1].d>m)j--;top.splice(j,0,{i,d:m});if(top.length>K)top.pop();worst=top[top.length-1].d}
+  }
+  return top.map(t=>({id:idAt(t.i),back:IDX.faces[t.i]===1,d:t.d}));
+}
+// perceptual hash: must match tools/build_index.py
+const HN=128,HM=176;
+const DCT8=(()=>{const N=32,m=new Float64Array(8*N);for(let k=0;k<8;k++){const c=k?Math.sqrt(2/N):Math.sqrt(1/N);for(let n=0;n<N;n++)m[k*N+n]=c*Math.cos(Math.PI*(2*n+1)*k/(2*N))}return m})();
+function rsWeights(a,b,N,len){
+  const m=new Float64Array(N*len),step=(b-a)/N;
+  for(let i=0;i<N;i++){const lo=a+step*i,hi=a+step*(i+1);let sum=0;
+    for(let p=Math.max(0,Math.floor(lo));p<Math.min(len,Math.ceil(hi));p++){const w=Math.min(hi,p+1)-Math.max(lo,p);if(w>0){m[i*len+p]=w;sum+=w}}
+    if(sum)for(let p=0;p<len;p++)m[i*len+p]/=sum}
+  return m;
+}
+const RW={full:[rsWeights(0,HM,32,HM),rsWeights(0,HN,32,HN)],art:[rsWeights(.11*HM,.56*HM,32,HM),rsWeights(.08*HN,.92*HN,32,HN)]};
+function boxResize(g,[wy,wx]){
+  const N=32,t=new Float64Array(HM*N),o=new Float64Array(N*N);
+  for(let y=0;y<HM;y++)for(let i=0;i<N;i++){let s=0;const r=i*HN,gr=y*HN;for(let p=0;p<HN;p++){const w=wx[r+p];if(w)s+=w*g[gr+p]}t[y*N+i]=s}
+  for(let j=0;j<N;j++)for(let i=0;i<N;i++){let s=0;const r=j*HM;for(let y=0;y<HM;y++){const w=wy[r+y];if(w)s+=w*t[y*N+i]}o[j*N+i]=s}
+  return o;
+}
+function phash(a){
+  const t=new Float64Array(8*32),low=new Float64Array(64);
+  for(let k=0;k<8;k++)for(let n=0;n<32;n++){let s=0;for(let r=0;r<32;r++)s+=DCT8[k*32+r]*a[r*32+n];t[k*32+n]=s}
+  for(let k=0;k<8;k++)for(let l=0;l<8;l++){let s=0;for(let n=0;n<32;n++)s+=t[k*32+n]*DCT8[l*32+n];low[k*8+l]=s}
+  const srt=[...low].sort((x,y)=>x-y),med=(srt[31]+srt[32])/2;let w0=0,w1=0;
+  for(let i=0;i<32;i++){if(low[i]>med)w0|=1<<i;if(low[32+i]>med)w1|=1<<i}
+  return[w0>>>0,w1>>>0];
+}
+const hcv=document.createElement("canvas");hcv.width=HN;hcv.height=HM;const hctx=hcv.getContext("2d",{willReadFrequently:true});
+function grayOf(src,r){
+  hctx.imageSmoothingEnabled=true;hctx.imageSmoothingQuality="high";hctx.clearRect(0,0,HN,HM);hctx.drawImage(src,r.x,r.y,r.w,r.h,0,0,HN,HM);
+  const d=hctx.getImageData(0,0,HN,HM).data,g=new Float64Array(HN*HM);for(let i=0;i<g.length;i++)g[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];return g;
+}
+function cardHash(src,r){const g=grayOf(src,r);return[...phash(boxResize(g,RW.full)),...phash(boxResize(g,RW.art))]}
+// find the card inside its pocket: the 63:88 rectangle with the strongest edges along its outline
+function locateCard(cv){
+  const W=170,H=Math.round(cv.height*W/cv.width),c=document.createElement("canvas");c.width=W;c.height=H;
+  const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(cv,0,0,W,H);
+  const d=x.getImageData(0,0,W,H).data,g=new Float32Array(W*H);for(let i=0;i<W*H;i++)g[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
+  const gx=new Float32Array(W*H),gy=new Float32Array(W*H);
+  for(let y=0;y<H;y++)for(let i=1;i<W-1;i++)gx[y*W+i]=Math.abs(g[y*W+i+1]-g[y*W+i-1]);
+  for(let y=1;y<H-1;y++)for(let i=0;i<W;i++)gy[y*W+i]=Math.abs(g[(y+1)*W+i]-g[(y-1)*W+i]);
+  const Cx=new Float64Array((H+1)*W),Ry=new Float64Array(H*(W+1));
+  for(let y=0;y<H;y++)for(let i=0;i<W;i++){const k=y*W+i;
+    Cx[(y+1)*W+i]=Cx[y*W+i]+Math.max(gx[k],i>0?gx[k-1]:0,i<W-1?gx[k+1]:0);
+    Ry[y*(W+1)+i+1]=Ry[y*(W+1)+i]+Math.max(gy[k],y>0?gy[k-W]:0,y<H-1?gy[k+W]:0)}
+  // score = edge strength along the weakest side and on average, slightly favouring larger outlines
+  const cand=[];let floor=-1;
+  for(let w=Math.round(W*.5);w<=W;w++){const h=Math.round(w*88/63);if(h>H)break;const bonus=1+.25*w/W;
+    for(let x0=0;x0<=W-w;x0++){const xr=x0+w-1;for(let y0=0;y0<=H-h;y0++){const yb=y0+h-1;
+      const l=(Cx[(y0+h)*W+x0]-Cx[y0*W+x0])/h,r=(Cx[(y0+h)*W+xr]-Cx[y0*W+xr])/h,t=(Ry[y0*(W+1)+x0+w]-Ry[y0*(W+1)+x0])/w,b=(Ry[yb*(W+1)+x0+w]-Ry[yb*(W+1)+x0])/w;
+      const sc=(.5*Math.min(l,r,t,b)+.5*(l+r+t+b)/4)*bonus;
+      if(sc>floor||cand.length<60){cand.push({sc,x:x0,y:y0,w,h});if(cand.length>120){cand.sort((p,q)=>q.sc-p.sc);cand.length=60;floor=cand[59].sc}}}}}
+  cand.sort((p,q)=>q.sc-p.sc);
+  const iou=(a,b)=>{const ix=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),iy=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return ix*iy/(a.w*a.h+b.w*b.h-ix*iy)};
+  const picks=[];for(const c of cand){if(picks.every(p=>iou(p,c)<.8))picks.push(c);if(picks.length===3)break}
+  const k=cv.width/W;return picks.map(p=>({x:p.x*k,y:p.y*k,w:p.w*k,h:p.h*k}));
+}
+function cardRects(cv){
+  const W=cv.width,H=cv.height,out=[{x:0,y:0,w:W,h:H}];
+  const add=(x,y,w,h)=>{w=Math.min(w,W);h=Math.min(h,H);out.push({x:Math.max(0,Math.min(W-w,x)),y:Math.max(0,Math.min(H-h,y)),w,h})};
+  for(const r of locateCard(cv)){const cx=r.x+r.w/2,cy=r.y+r.h/2;
+    for(const[dx,dy]of[[0,0],[-.02,0],[.02,0],[0,-.02],[0,.02]])add(cx-r.w/2+dx*r.w,cy-r.h/2+dy*r.h,r.w,r.h);
+    for(const sc of[.96,1.04])add(cx-r.w*sc/2,cy-r.h*sc/2,r.w*sc,r.h*sc)}
+  return out;
+}
+async function vecUrl(url){if(artCache.has(url))return artCache.get(url);const img=await loadImg(url);const v=vecOf(img,0,0,img.naturalWidth,img.naturalHeight);artCache.set(url,v);return v}
+const matchPct=d=>Math.round(100*Math.max(0,Math.min(1,(64-d)/40)));
+async function rerank(p,raw){
+  let qv=null;try{qv=p.rects.map(r=>vecOf(p.cv,r.x,r.y,r.w,r.h))}catch{}
+  const cands=[];
+  for(const t of p.top){const c=raw.get(t.id);if(!c)continue;
+    const url=t.back?c.card_faces?.[1]?.image_uris?.small:(c.image_uris?.small||c.card_faces?.[0]?.image_uris?.small);
+    let cos=null;
+    if(qv&&url){try{const v=await vecUrl(url);cos=-1;for(const q of qv){let s=0;for(let k=0;k<v.length;k++)s+=v[k]*q[k];if(s>cos)cos=s}}catch{}}
+    cands.push({c,d:t.d,cos,score:(cos??0)-.6*t.d/128});
+  }
+  if(!cands.length) return{status:"none",card:null,ocr:"No match"};
+  const useCos=cands.some(x=>x.cos!=null);
+  cands.sort((a,b)=>useCos?b.score-a.score:a.d-b.d);
+  const b=cands[0],dmin=Math.min(...cands.map(x=>x.d));
+  if((dmin>NONE_D&&(b.cos??0)<.8)||(useCos&&b.cos<.45)) return{status:"none",card:null,ocr:"No match (empty pocket?)"};
+  let status="matched";
+  if(b.d>WEAK_D||(useCos&&b.cos<.6)) status="weak";
+  else{const r=cands.find(x=>x.c.id!==b.c.id);
+    if(r&&r.c.oracle_id===b.c.oracle_id&&(useCos?b.score-r.score<.03:r.d-b.d<3)) status="guess"}
+  return{status,card:slim(b.c),ocr:`Artwork match ${matchPct(b.d)}%`};
+}
+async function matchCells(cells){
+  setProgress(.02,"Loading card database…");
+  let idx=null;try{idx=await loadIndex()}catch{}
+  if(!idx){toast("Card database not found yet. Using text reading instead (see Settings).");return false}
+  const per=[];
+  for(let i=0;i<cells.length;i++){
+    setProgress(.05+.35*i/cells.length,`Comparing card ${i+1} of ${cells.length}…`);
+    await new Promise(r=>setTimeout(r,0));
+    const cv=cells[i].cv,rects=cardRects(cv);
+    per.push({cv,rects,top:searchIndex(rects.map(r=>cardHash(cv,r)),TOPK)});
+  }
+  setProgress(.42,"Fetching card details…");
+  const ids=[...new Set(per.flatMap(p=>p.top.map(t=>t.id)))],raw=new Map();
+  try{for(let i=0;i<ids.length;i+=75){const r=await sf("/cards/collection",{body:{identifiers:ids.slice(i,i+75).map(id=>({id}))}});for(const c of r?.data||[])raw.set(c.id,c)}}
+  catch(e){toast("Couldn't reach Scryfall: "+e.message);return false}
+  for(let i=0;i<per.length;i++){
+    setProgress(.45+.55*i/per.length,`Checking versions ${i+1} of ${per.length}…`);
+    const it=S.review[i],res=await rerank(per[i],raw);
+    it.status=res.status;it.card=res.card;it.ocr=res.ocr;
+    if(!it.card||res.status==="weak") it.include=false;
+    if(it.card&&!it.card.finishes.includes("nonfoil")) it.foil=true;
+    renderReview();
+  }
+  setProgress(1);return true;
+}
+
 /* ===================== scan flow ===================== */
 function layout(){return LAYOUTS.find(l=>l.id===S.settings.layout)||LAYOUTS[2]}
 function defaultCorners(c){const mx=c.width*.03,my=c.height*.03;return[[mx,my],[c.width-mx,my],[c.width-mx,c.height-my],[mx,c.height-my]]}
@@ -470,6 +617,7 @@ async function runScan(){
     const cells=[];for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)cells.push({r,c,cv:cropCell(page,r,c,S.settings.inset)});
     S.review=cells.map(x=>({key:uid(),r:x.r,c:x.c,thumb:thumb(x.cv),big:thumb(x.cv,520),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}));
     render();
+    if(S.settings.engine==="image"&&await matchCells(cells)){S.scanning=false;render();return}
     let claude=null;
     if(S.settings.engine==="claude"&&S.settings.apiKey){
       setProgress(.15,"Asking Claude to read the page…");
@@ -553,6 +701,8 @@ function render(){
   else m.innerHTML=viewSettings();
   if(S.tab==="scan"&&S.scan&&!S.review) mountEditor();
   if(S.tab==="scan"&&S.review) renderReview();
+  if(S.tab==="settings") fetch("data/meta.json",{cache:"no-store"}).then(r=>r.ok?r.json():null).catch(()=>null).then(m=>{const el=$("#idx-status");if(!el)return;
+    el.textContent=m?`Card database: ${m.count.toLocaleString("de-DE")} printings, updated ${new Date(m.built*1000).toLocaleDateString("de-DE")}.`:"Card database not built yet: in your GitHub repo open Actions → Build card index → Run workflow. The first build takes 30–60 minutes."});
 }
 function viewScan(){
   const L=layout();
@@ -573,8 +723,7 @@ function viewScan(){
       <div class="layouts" id="layouts">${LAYOUTS.map(l=>`<button data-l="${l.id}" aria-pressed="${l.id===L.id}">${pocketsIcon(l.rows,l.cols)}${l.label}</button>`).join("")}</div>
       <div class="row"><button class="btn" id="ed-rot">Rotate</button><button class="btn" id="ed-reset">Reset corners</button><button class="btn ghost" id="ed-retake">Retake</button></div>
       <button class="btn primary" id="ed-scan">Scan ${L.rows*L.cols} card${L.rows*L.cols>1?"s":""}</button>
-      <p class="hint mono">Recognition: ${S.settings.engine==="claude"&&S.settings.apiKey?"Claude vision":"on-device OCR"} · saving to ${esc(S.settings.binder)}</p>
-      ${S.settings.engine==="claude"&&S.settings.apiKey?"":`<p class="hint">On-device OCR misses foils, full-art and glare-heavy cards. For full binder pages, switch to Claude vision in Settings.</p>`}
+      <p class="hint mono">Recognition: ${{image:"artwork match",ocr:"text reading",claude:"Claude vision"}[S.settings.engine]||"artwork match"} · saving to ${esc(S.settings.binder)}</p>
     </section>`;
   }
   return `<section class="view">
@@ -601,7 +750,7 @@ function renderReview(){
           <div class="name">${c?esc(c.name):`<span class="muted">${esc(it.ocr||"Reading…")}</span>`}</div>
           <div class="meta">${c?`${esc(c.set.toUpperCase())} #${esc(c.num)} · <span class="rar-${c.rarity}">${esc(c.rarity)}</span>${c.lang!=="en"?" · "+esc(c.lang.toUpperCase()):""}`:"&nbsp;"}</div>
         </div><div style="text-align:right"><div class="price">${c?eur(p):""}</div><span class="pos">R${it.r+1}·C${it.c+1}</span></div></div>
-        <div class="row" style="gap:6px"><span class="status ${it.status}">${{matched:"Exact match",guess:"Check version",none:"Not found",pending:"Reading"}[it.status]}</span>${c&&c.setName?`<span class="meta" style="font-family:var(--f-ui)">${esc(c.setName)}</span>`:""}</div>
+        <div class="row" style="gap:6px"><span class="status ${it.status}">${{matched:"Matched",guess:"Check version",weak:"Check card",none:"Not found",pending:"Reading"}[it.status]}</span>${c&&c.setName?`<span class="meta" style="font-family:var(--f-ui)">${esc(c.setName)}</span>`:""}</div>
         ${it.ocr&&it.status!=="pending"?`<div class="meta">Read: ${esc(it.ocr)}</div>`:""}
         ${it.status==="pending"?"":`<div class="chips">
           ${c?`<button class="chip foil" data-act="foil" aria-pressed="${it.foil}" ${canFoil?"":"disabled title=\"Only one finish exists\""}>✦ Foil</button>
@@ -679,7 +828,8 @@ function viewSettings(){
       <div class="field"><label for="s-cid">Cardmarket seller-country ID</label><input type="number" id="s-cid" value="${s.countryId}"><small>If Cardmarket shows another country after tapping the link, correct this number.</small></div>
     </div>
     <div class="panel"><span class="label">Card recognition</span>
-      <div class="field"><label for="s-engine">Engine</label><select id="s-engine"><option value="ocr" ${s.engine==="ocr"?"selected":""}>On-device OCR (free, offline-capable)</option><option value="claude" ${s.engine==="claude"?"selected":""}>Claude vision (more accurate, needs API key)</option></select></div>
+      <div class="field"><label for="s-engine">Engine</label><select id="s-engine"><option value="image" ${s.engine==="image"?"selected":""}>Artwork match (free, recommended)</option><option value="ocr" ${s.engine==="ocr"?"selected":""}>Text reading (older fallback)</option><option value="claude" ${s.engine==="claude"?"selected":""}>Claude vision (needs API key)</option></select>
+      <small id="idx-status">Checking card database…</small></div>
       <div class="field"><label for="s-langs">OCR languages</label><select id="s-langs"><option value="eng+deu" ${s.ocrLangs==="eng+deu"?"selected":""}>English + German</option><option value="eng" ${s.ocrLangs==="eng"?"selected":""}>English only</option><option value="eng+deu+fra+ita+spa" ${s.ocrLangs.length>8?"selected":""}>EN, DE, FR, IT, ES</option></select><small>German card names are matched through the set code and number printed bottom-left.</small></div>
       <div class="field"><label for="s-key">Anthropic API key</label><input type="password" id="s-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"><small>Stored on this phone only and sent straight to Anthropic. Leave empty to use OCR.</small></div>
       <div class="field"><label for="s-model">Claude model</label><input type="text" id="s-model" value="${esc(s.model)}"></div>
