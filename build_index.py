@@ -84,6 +84,33 @@ def save_cache(cache, path):
     os.replace(tmp, path)
 
 
+def find_download(bulk):
+    """Locate the default_cards bulk file; Scryfall has changed this response's field names before."""
+    items = bulk.get("data", bulk if isinstance(bulk, list) else [])
+    entry = next((b for b in items if str(b.get("type", "")).replace("-", "_") == "default_cards"), None)
+    if entry is None:
+        raise RuntimeError("no default_cards entry; types: " + ", ".join(str(b.get("type")) for b in items))
+
+    def pick(d):
+        for k in ("download_uri", "download_url", "file_uri", "file_url"):
+            if isinstance(d.get(k), str):
+                return d[k]
+        for k, v in d.items():
+            if isinstance(v, str) and v.startswith("http") and ".json" in v and "api.scryfall.com/bulk-data" not in v:
+                return v
+        return None
+
+    uri = pick(entry)
+    if not uri and isinstance(entry.get("uri"), str):
+        detail = json.loads(fetch(entry["uri"]))
+        uri = pick(detail)
+        if not uri:
+            raise RuntimeError("no download link; fields: " + ", ".join(f"{k}={str(v)[:60]}" for k, v in detail.items()))
+    if not uri:
+        raise RuntimeError("no download link; fields: " + ", ".join(f"{k}={str(v)[:60]}" for k, v in entry.items()))
+    return uri
+
+
 def main():
     import ijson
     root = os.path.dirname(os.path.abspath(__file__))
@@ -98,7 +125,7 @@ def main():
     note(f"cached hashes: {len(cache)}")
 
     bulk = json.loads(fetch("https://api.scryfall.com/bulk-data"))
-    uri = next(b["download_uri"] for b in bulk["data"] if b["type"] == "default_cards")
+    uri = find_download(bulk)
     cards_path = os.path.join(cache_dir, "default_cards.json")
     print("downloading", uri, flush=True)
     with urllib.request.urlopen(urllib.request.Request(uri, headers=UA), timeout=900) as r, open(cards_path, "wb") as f:
