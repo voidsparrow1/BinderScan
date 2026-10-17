@@ -1,0 +1,47 @@
+name: Build card index
+
+on:
+  workflow_dispatch:          # run it by hand from the Actions tab
+  schedule:
+    - cron: "17 3 1,15 * *"   # 1st and 15th of each month, picks up new sets
+
+permissions:
+  contents: write
+
+concurrency: build-index
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pillow numpy ijson
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: .cache
+          key: hashcache-${{ github.run_id }}
+          restore-keys: hashcache-
+
+      - run: python build_index.py
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .cache
+          key: hashcache-${{ github.run_id }}
+
+      - name: Commit index
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/index.bin data/meta.json
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Update card index"
+          git push
