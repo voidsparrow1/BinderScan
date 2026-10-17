@@ -161,7 +161,7 @@ const LAYOUTS = [
   {id:"3x4",rows:3,cols:4,label:"12-pocket"}
 ];
 let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
-const APP_VERSION = "v6";
+const APP_VERSION = "v7";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
