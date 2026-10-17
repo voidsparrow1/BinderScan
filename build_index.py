@@ -84,6 +84,21 @@ def save_cache(cache, path):
     os.replace(tmp, path)
 
 
+def iter_json_lines(f):
+    """Yield every JSON object from a file with one (or more) objects per line."""
+    dec = json.JSONDecoder()
+    for raw in f:
+        line = raw.decode("utf-8").strip().rstrip(",")
+        pos = 0
+        while pos < len(line):
+            while pos < len(line) and line[pos] in " ,\t[]":
+                pos += 1
+            if pos >= len(line):
+                break
+            obj, pos = dec.raw_decode(line, pos)
+            yield obj
+
+
 def find_download(bulk):
     """Locate the default_cards bulk file; Scryfall has changed this response's field names before."""
     items = bulk.get("data", bulk if isinstance(bulk, list) else [])
@@ -136,8 +151,16 @@ def main():
     with open(cards_path, "rb") as raw:
         gz = raw.read(2) == b"\x1f\x8b"
     note(f"bulk file {os.path.getsize(cards_path) / 1e6:.0f} MB{' (gzip)' if gz else ''}")
-    with (gzip.open(cards_path, "rb") if gz else open(cards_path, "rb")) as f:
-        for c in ijson.items(f, "item"):
+    opener = (lambda: gzip.open(cards_path, "rb")) if gz else (lambda: open(cards_path, "rb"))
+    with opener() as f:
+        head = f.read(4096).lstrip()
+    is_array = head[:1] == b"["          # classic format: one JSON array; newer: one card object per line
+    note("bulk format: " + ("JSON array" if is_array else "one card per line"))
+    with opener() as f:
+        cards = ijson.items(f, "item") if is_array else iter_json_lines(f)
+        for c in cards:
+            if not isinstance(c, dict) or c.get("object") not in (None, "card"):
+                continue
             if c.get("digital") or "paper" not in (c.get("games") or []):
                 continue
             if c.get("layout") in SKIP_LAYOUTS or c.get("oversized") or c.get("image_status") in ("missing", "placeholder"):
