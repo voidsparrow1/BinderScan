@@ -81,7 +81,7 @@ def save_cache(cache, path):
 
 def main():
     import ijson
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.path.dirname(os.path.abspath(__file__))
     data_dir, cache_dir = os.path.join(root, "data"), os.path.join(root, ".cache")
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)

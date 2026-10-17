@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
@@ -161,7 +161,7 @@ const LAYOUTS = [
   {id:"3x4",rows:3,cols:4,label:"12-pocket"}
 ];
 let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
-const APP_VERSION = "v5";
+const APP_VERSION = "v6";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
@@ -266,6 +266,33 @@ function warpPage(src,corners,rows,cols){
     for(let k=0;k<3;k++) o[oi+k]=(sd[i00+k]*(1-ax)+sd[i10+k]*ax)*(1-ay)+(sd[i01+k]*(1-ax)+sd[i11+k]*ax)*ay;
   }}
   octx.putImageData(od,0,0);return out;
+}
+// Grid with a draggable point at every crossing: the 4 outer corners set a perspective grid,
+// every other crossing stores its own nudge so the grid can follow a bulging page.
+function meshPoints(sc,L){
+  const map=homography(sc.corners),R=L.rows,C=L.cols,n=(R+1)*(C+1);
+  if(!sc.off||sc.off.length!==n) sc.off=Array.from({length:n},()=>[0,0]);
+  const pts=[];for(let r=0;r<=R;r++)for(let c=0;c<=C;c++){const [x,y]=map(c/C,r/R),o=sc.off[r*(C+1)+c];pts.push([x+o[0],y+o[1]])}
+  return pts;
+}
+const cellQuad=(pts,C,r,c)=>[pts[r*(C+1)+c],pts[r*(C+1)+c+1],pts[(r+1)*(C+1)+c+1],pts[(r+1)*(C+1)+c]];
+function warpQuad(sd,sw,sh,quad,W,H,ins=0){
+  const map=homography(quad),out=document.createElement("canvas");out.width=W;out.height=H;
+  const octx=out.getContext("2d"),od=octx.createImageData(W,H),o=od.data,span=1-2*ins;
+  for(let y=0;y<H;y++){const v=ins+span*(y+.5)/H;for(let x=0;x<W;x++){
+    let [fx,fy]=map(ins+span*(x+.5)/W,v);fx-=.5;fy-=.5;
+    const oi=(y*W+x)*4;o[oi+3]=255;
+    const x0=Math.floor(fx),y0=Math.floor(fy);
+    if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
+    const ax=fx-x0,ay=fy-y0,i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4;
+    for(let k=0;k<3;k++) o[oi+k]=(sd[i00+k]*(1-ax)+sd[i10+k]*ax)*(1-ay)+(sd[i01+k]*(1-ax)+sd[i11+k]*ax)*ay;
+  }}
+  octx.putImageData(od,0,0);return out;
+}
+function warpCells(sc,L,W,H,ins){
+  const src=sc.img,sd=src.getContext("2d").getImageData(0,0,src.width,src.height).data,pts=meshPoints(sc,L),cells=[];
+  for(let r=0;r<L.rows;r++)for(let c=0;c<L.cols;c++)cells.push({r,c,cv:warpQuad(sd,src.width,src.height,cellQuad(pts,L.cols,r,c),W,H,ins)});
+  return cells;
 }
 function cropCell(page,r,c,insetPct){
   const ix=CARD_W*insetPct/100, iy=CARD_H*insetPct/100;
@@ -487,7 +514,7 @@ function searchIndex(qs,K){
   }
   return top.map(t=>({id:idAt(t.i),back:IDX.faces[t.i]===1,d:t.d}));
 }
-// perceptual hash: must match tools/build_index.py
+// perceptual hash: must match build_index.py
 const HN=128,HM=176;
 const DCT8=(()=>{const N=32,m=new Float64Array(8*N);for(let k=0;k<8;k++){const c=k?Math.sqrt(2/N):Math.sqrt(1/N);for(let n=0;n<N;n++)m[k*N+n]=c*Math.cos(Math.PI*(2*n+1)*k/(2*N))}return m})();
 function rsWeights(a,b,N,len){
@@ -613,8 +640,8 @@ async function runScan(){
     // keep the photo's native detail: cell width follows the source resolution (680–1100 px)
     const qw=Math.max(Math.hypot(sc.corners[1][0]-sc.corners[0][0],sc.corners[1][1]-sc.corners[0][1]),Math.hypot(sc.corners[2][0]-sc.corners[3][0],sc.corners[2][1]-sc.corners[3][1]));
     CARD_W=Math.round(Math.max(680,Math.min(1100,qw/cols)));CARD_H=Math.round(CARD_W*88/63);
-    const page=warpPage(sc.img,sc.corners,rows,cols);
-    const cells=[];for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)cells.push({r,c,cv:cropCell(page,r,c,S.settings.inset)});
+    await new Promise(r=>setTimeout(r,30));
+    const cells=warpCells(sc,layout(),CARD_W,CARD_H,S.settings.inset/100);
     S.review=cells.map(x=>({key:uid(),r:x.r,c:x.c,thumb:thumb(x.cv),big:thumb(x.cv,520),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}));
     render();
     if(S.settings.engine==="image"&&await matchCells(cells)){S.scanning=false;render();return}
@@ -718,10 +745,10 @@ function viewScan(){
   if(S.scan){
     return `<section class="view">
       <div class="row" style="justify-content:space-between"><h2>Fit the grid</h2><span class="mono muted">${L.label} · ${L.rows}×${L.cols}</span></div>
-      <p class="hint">Drag the four corners onto the outer edges of the cards. Each box should hold one card.</p>
+      <p class="hint">Drag the big corner points onto the outer edges of the pockets. If the page bulges, drag the small points where the lines cross until every box holds one card.</p>
       <div class="editor" id="editor"><canvas id="ed-cv"></canvas></div>
       <div class="layouts" id="layouts">${LAYOUTS.map(l=>`<button data-l="${l.id}" aria-pressed="${l.id===L.id}">${pocketsIcon(l.rows,l.cols)}${l.label}</button>`).join("")}</div>
-      <div class="row"><button class="btn" id="ed-rot">Rotate</button><button class="btn" id="ed-reset">Reset corners</button><button class="btn ghost" id="ed-retake">Retake</button></div>
+      <div class="row"><button class="btn" id="ed-preview">Preview cuts</button><button class="btn" id="ed-straight">Straighten lines</button><button class="btn" id="ed-rot">Rotate</button><button class="btn" id="ed-reset">Reset</button><button class="btn ghost" id="ed-retake">Retake</button></div>
       <button class="btn primary" id="ed-scan">Scan ${L.rows*L.cols} card${L.rows*L.cols>1?"s":""}</button>
       <p class="hint mono">Recognition: ${{image:"artwork match",ocr:"text reading",claude:"Claude vision"}[S.settings.engine]||"artwork match"} · saving to ${esc(S.settings.binder)}</p>
     </section>`;
@@ -843,25 +870,54 @@ function viewSettings(){
 function mountEditor(){
   const cv=$("#ed-cv"), sc=S.scan, img=sc.img;
   cv.width=img.width;cv.height=img.height;
-  const ctx=cv.getContext("2d"); const L=layout();
-  const hr=()=>Math.max(img.width,img.height)*.028;
+  const ctx=cv.getContext("2d"), L=layout(), C=L.cols, R=L.rows;
+  const big=Math.max(img.width,img.height), hr=big*.028, lw=Math.max(2,img.width/400);
+  const cornerIdx=[0,C,R*(C+1)+C,R*(C+1)], cornerOf=i=>cornerIdx.indexOf(i);
+  let drag=-1, dragPt=null;
   function draw(){
+    const pts=meshPoints(sc,L);
     ctx.drawImage(img,0,0);
-    const p=sc.corners, map=homography(p);
-    ctx.fillStyle="rgba(0,0,0,.45)";ctx.beginPath();ctx.rect(0,0,img.width,img.height);ctx.moveTo(...p[0]);ctx.lineTo(...p[3]);ctx.lineTo(...p[2]);ctx.lineTo(...p[1]);ctx.closePath();ctx.fill("evenodd");
-    const lw=Math.max(2,img.width/400);ctx.lineWidth=lw;ctx.strokeStyle="#e0ab4a";
-    const line=(a,b)=>{ctx.beginPath();for(let t=0;t<=1.0001;t+=.1){const [x,y]=map(a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t);t===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke()};
-    for(let c=0;c<=L.cols;c++)line([c/L.cols,0],[c/L.cols,1]);
-    for(let r=0;r<=L.rows;r++)line([0,r/L.rows],[1,r/L.rows]);
-    p.forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,hr(),0,7);ctx.fillStyle="rgba(224,171,74,.35)";ctx.fill();ctx.lineWidth=lw*1.5;ctx.stroke()});
+    // dim everything outside the grid
+    const ring=[];for(let c=0;c<=C;c++)ring.push(pts[c]);for(let r=1;r<=R;r++)ring.push(pts[r*(C+1)+C]);for(let c=C-1;c>=0;c--)ring.push(pts[R*(C+1)+c]);for(let r=R-1;r>0;r--)ring.push(pts[r*(C+1)]);
+    ctx.fillStyle="rgba(0,0,0,.45)";ctx.beginPath();ctx.rect(0,0,img.width,img.height);ctx.moveTo(...ring[0]);for(let i=ring.length-1;i>0;i--)ctx.lineTo(...ring[i]);ctx.closePath();ctx.fill("evenodd");
+    ctx.lineWidth=lw;ctx.strokeStyle="#e0ab4a";
+    for(let r=0;r<=R;r++){ctx.beginPath();for(let c=0;c<=C;c++){const p=pts[r*(C+1)+c];c?ctx.lineTo(...p):ctx.moveTo(...p)}ctx.stroke()}
+    for(let c=0;c<=C;c++){ctx.beginPath();for(let r=0;r<=R;r++){const p=pts[r*(C+1)+c];r?ctx.lineTo(...p):ctx.moveTo(...p)}ctx.stroke()}
+    pts.forEach(([x,y],i)=>{const corner=cornerOf(i)>=0;ctx.beginPath();ctx.arc(x,y,corner?hr:hr*.55,0,7);
+      ctx.fillStyle=i===drag?"rgba(224,171,74,.75)":corner?"rgba(224,171,74,.35)":"rgba(255,255,255,.35)";ctx.fill();ctx.lineWidth=lw*1.5;ctx.stroke()});
+    if(dragPt) loupe(dragPt);
+  }
+  // magnifier in the top corner away from your finger, so you can see the edge you're placing
+  function loupe([px,py]){
+    const r=big*.13, z=3, cx=px<img.width/2?img.width-r-lw*6:r+lw*6, cy=r+lw*6;
+    ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.clip();
+    ctx.fillStyle="#000";ctx.fillRect(cx-r,cy-r,2*r,2*r);
+    ctx.drawImage(img,px-r/z,py-r/z,2*r/z,2*r/z,cx-r,cy-r,2*r,2*r);
+    // grid lines near the point, magnified
+    const pts=meshPoints(sc,L),tr=([x,y])=>[cx+(x-px)*z,cy+(y-py)*z];ctx.strokeStyle="#e0ab4a";ctx.lineWidth=lw;
+    for(let rr=0;rr<=R;rr++){ctx.beginPath();for(let c=0;c<=C;c++){const q=tr(pts[rr*(C+1)+c]);c?ctx.lineTo(...q):ctx.moveTo(...q)}ctx.stroke()}
+    for(let c=0;c<=C;c++){ctx.beginPath();for(let rr=0;rr<=R;rr++){const q=tr(pts[rr*(C+1)+c]);rr?ctx.lineTo(...q):ctx.moveTo(...q)}ctx.stroke()}
+    ctx.strokeStyle="#fff";ctx.lineWidth=lw*.8;ctx.beginPath();ctx.moveTo(cx-r*.15,cy);ctx.lineTo(cx+r*.15,cy);ctx.moveTo(cx,cy-r*.15);ctx.lineTo(cx,cy+r*.15);ctx.stroke();
+    ctx.restore();ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.strokeStyle="#e0ab4a";ctx.lineWidth=lw*2;ctx.stroke();
   }
   draw();
-  let drag=-1;
   const pos=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*img.width/r.width,(e.clientY-r.top)*img.height/r.height]};
-  cv.onpointerdown=e=>{const [x,y]=pos(e);let best=-1,bd=1e9;sc.corners.forEach(([cx,cy],i)=>{const d=Math.hypot(cx-x,cy-y);if(d<bd){bd=d;best=i}});
-    if(bd<hr()*3){drag=best;cv.setPointerCapture(e.pointerId)}};
-  cv.onpointermove=e=>{if(drag<0)return;const [x,y]=pos(e);sc.corners[drag]=[Math.max(0,Math.min(img.width,x)),Math.max(0,Math.min(img.height,y))];draw()};
-  cv.onpointerup=cv.onpointercancel=()=>{drag=-1};
+  cv.onpointerdown=e=>{const [x,y]=pos(e),pts=meshPoints(sc,L);let best=-1,bd=1e9;
+    pts.forEach(([px,py],i)=>{const d=Math.hypot(px-x,py-y)*(cornerOf(i)>=0?.8:1);if(d<bd){bd=d;best=i}});
+    if(bd<hr*2.5){drag=best;dragPt=pts[best];cv.setPointerCapture(e.pointerId);draw()}};
+  cv.onpointermove=e=>{if(drag<0)return;let [x,y]=pos(e);x=Math.max(0,Math.min(img.width,x));y=Math.max(0,Math.min(img.height,y));
+    const k=cornerOf(drag);
+    if(k>=0) sc.corners[k]=[x,y];
+    else{const map=homography(sc.corners),r=Math.floor(drag/(C+1)),c=drag%(C+1),[gx,gy]=map(c/C,r/R);sc.off[drag]=[x-gx,y-gy]}
+    dragPt=[x,y];draw()};
+  cv.onpointerup=cv.onpointercancel=()=>{drag=-1;dragPt=null;draw()};
+}
+function previewCuts(){
+  const L=layout(),W=150,H=Math.round(150*88/63);
+  const cells=warpCells(S.scan,L,W,H,S.settings.inset/100);
+  sheet("Preview cuts",`<p class="hint">Each card should sit fully inside its box. Small margins are fine; the scan finds the card inside each box.</p>
+    <div style="display:grid;grid-template-columns:repeat(${L.cols},1fr);gap:6px" id="pv"></div>`,body=>{
+    const g=$("#pv",body);cells.forEach(c=>{c.cv.style.cssText="width:100%;height:auto;border-radius:4px";g.appendChild(c.cv)})});
 }
 
 /* ===================== events ===================== */
@@ -887,8 +943,10 @@ document.addEventListener("click",e=>{
   if(t.id==="take") return $("#file-cam").click();
   if(t.id==="pick") return $("#file-pick").click();
   if(t.dataset.l){S.settings.layout=t.dataset.l;saveSet();render();return}
-  if(t.id==="ed-rot"){S.scan.img=rotateCanvas(S.scan.img);S.scan.corners=defaultCorners(S.scan.img);render();return}
-  if(t.id==="ed-reset"){S.scan.corners=defaultCorners(S.scan.img);render();return}
+  if(t.id==="ed-rot"){S.scan.img=rotateCanvas(S.scan.img);S.scan.corners=defaultCorners(S.scan.img);S.scan.off=null;render();return}
+  if(t.id==="ed-reset"){S.scan.corners=defaultCorners(S.scan.img);S.scan.off=null;render();return}
+  if(t.id==="ed-straight"){S.scan.off=null;render();return}
+  if(t.id==="ed-preview") return previewCuts();
   if(t.id==="ed-retake"){S.scan=null;render();return}
   if(t.id==="ed-scan") return runScan();
   if(t.id==="rv-cancel"){S.review=null;render();return}
