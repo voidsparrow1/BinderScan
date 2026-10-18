@@ -318,7 +318,7 @@ async function loadIndex(){
   const v=dv.getUint32(4,true),n=dv.getUint32(8,true),words=v>=2?dv.getUint32(12,true):4;let o=16;
   const ids=new Uint8Array(buf,o,16*n);o+=16*n;const faces=new Uint8Array(buf,o,n);o+=n;o=(o+3)&~3;
   IDX={v,n,ids,faces,words,H:new Uint32Array(buf,o,words*n),built:meta.built};
-  if(v>=2) TH={weak:66,none:86,acc:60,grid:68,pctTop:48,pctZero:128};
+  if(v>=2) TH={weak:64,none:72,acc:62,grid:66,pctTop:40,pctZero:90};
   return IDX;
 }
 function idAt(i){let h="";for(let k=0;k<16;k++){h+=IDX.ids[i*16+k].toString(16).padStart(2,"0");if(k===3||k===5||k===7||k===9)h+="-"}return h}
@@ -373,15 +373,27 @@ function grayOf(src,r){
   hctx.imageSmoothingEnabled=true;hctx.imageSmoothingQuality="high";hctx.clearRect(0,0,HN,HM);hctx.drawImage(src,r.x,r.y,r.w,r.h,0,0,HN,HM);
   const d=hctx.getImageData(0,0,HN,HM).data,g=new Float64Array(HN*HM);for(let i=0;i<g.length;i++)g[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];return g;
 }
-function cardHashV1(src,r){const g=grayOf(src,r);return[...phash(boxResize(g,RW.full)),...phash(boxResize(g,RW.art))]}
-function cardHashV2(src,r){
-  const g=grayOf(src,r),bl=boxBlur(g,HN,HM,11,3),hp=new Float64Array(HN*HM),g0=new Float64Array(HN*HM);
+function hashGrayV1(g){return[...phash(boxResize(g,RW.full)),...phash(boxResize(g,RW.art))]}
+function hashGrayV2(g){
+  const bl=boxBlur(g,HN,HM,11,3),hp=new Float64Array(HN*HM),g0=new Float64Array(HN*HM);
   for(let i=0;i<hp.length;i++)hp[i]=g[i]-bl[i];
   for(let y=0;y<HM;y++)for(let x=0;x<HN;x++){const gx=g[y*HN+Math.min(HN-1,x+1)]-g[y*HN+Math.max(0,x-1)],gy=g[Math.min(HM-1,y+1)*HN+x]-g[Math.max(0,y-1)*HN+x];g0[y*HN+x]=Math.sqrt(gx*gx+gy*gy)}
   const gr=boxBlur(g0,HN,HM,1,2);
   return[...phash(boxResize(hp,RW.full)),...phash(boxResize(hp,RW.art)),...phash(boxResize(gr,RW.full)),...phash(boxResize(gr,RW.art))];
 }
-const cardHash=(src,r)=>IDX&&IDX.v>=2?cardHashV2(src,r):cardHashV1(src,r);
+const hashGray=g=>IDX&&IDX.v>=2?hashGrayV2(g):hashGrayV1(g);
+const cardHashV1=(src,r)=>hashGrayV1(grayOf(src,r)),cardHashV2=(src,r)=>hashGrayV2(grayOf(src,r)),cardHash=(src,r)=>hashGray(grayOf(src,r));
+// sample a (perspective) quad straight into a HN×HM gray array, bilinear, no canvas round-trip
+function grayWarp(sd,sw,sh,quad){
+  const map=homography(quad),g=new Float64Array(HN*HM);
+  for(let y=0;y<HM;y++){const v=(y+.5)/HM;for(let x=0;x<HN;x++){
+    let [fx,fy]=map((x+.5)/HN,v);fx-=.5;fy-=.5;const x0=Math.floor(fx),y0=Math.floor(fy);
+    if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
+    const ax=fx-x0,ay=fy-y0,i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4,w00=(1-ax)*(1-ay),w10=ax*(1-ay),w01=(1-ax)*ay,w11=ax*ay;
+    g[y*HN+x]=.299*(sd[i00]*w00+sd[i10]*w10+sd[i01]*w01+sd[i11]*w11)+.587*(sd[i00+1]*w00+sd[i10+1]*w10+sd[i01+1]*w01+sd[i11+1]*w11)+.114*(sd[i00+2]*w00+sd[i10+2]*w10+sd[i01+2]*w01+sd[i11+2]*w11);
+  }}
+  return g;
+}
 const matchPct=d=>Math.round(100*Math.max(0,Math.min(1,(TH.pctZero-d)/(TH.pctZero-TH.pctTop))));
 // regular set printings first: promos and stamped/variant numbers (e.g. 21s, 17p, 745z) only win when they match clearly better
 const isPromo=c=>c.set_type==="promo"||c.promo===true||/[^\d]/.test(c.collector_number||"")||(/^p[a-z0-9]{3}$/.test(c.set||"")&&c.set_type!=="core"&&c.set_type!=="expansion");
@@ -403,7 +415,7 @@ function rerank(top,raw){
 // 1) straighten the photo by its dominant edge angle, 2) score every card-shaped (≈63:88) rectangle by how strong its
 // four edges are, 3) confirm candidates with the artwork fingerprint (which also fixes their size), 4) on binder pages,
 // predict missing cards from the grid the confirmed ones form, 5) keep non-overlapping winners in reading order.
-const DET_LONG=560;
+const DET_LONG=480;
 function rgbEdges(cv,W,H){
   const c=document.createElement("canvas");c.width=W;c.height=H;const x=c.getContext("2d",{willReadFrequently:true});
   x.imageSmoothingQuality="high";x.drawImage(cv,0,0,W,H);const d=x.getImageData(0,0,W,H).data;
@@ -421,8 +433,10 @@ function dominantAngle(GX,GY){
   for(let i=0;i<GX.length;i+=7)mags.push(Math.hypot(GX[i],GY[i]));mags.sort((a,b)=>a-b);const thr=mags[Math.floor(mags.length*.9)]||1;
   for(let i=0;i<GX.length;i++){const m=Math.hypot(GX[i],GY[i]);if(m<thr)continue;
     let a=Math.atan2(GY[i],GX[i])*180/Math.PI;a=((a%90)+90)%90;if(a>45)a-=90;if(a<-20||a>20)continue;bins[Math.round((a+20)*2)]+=m}
-  let best=40,bv=-1;for(let k=0;k<81;k++){const v=(bins[k-1]||0)+2*bins[k]+(bins[k+1]||0);if(v>bv){bv=v;best=k}}
-  return best/2-20;
+  // strongest ±1.5° range wins: a narrow spike at exactly 0° (JPEG blocks, image borders) shouldn't beat the cards' real tilt
+  let best=40,bv=-1;for(let k=0;k<81;k++){let v=0;for(let j=-3;j<=3;j++)v+=(bins[k+j]||0)*(4-Math.abs(j));if(v>bv){bv=v;best=k}}
+  let sw=0,sa=0;for(let j=-3;j<=3;j++){const v=bins[best+j]||0;sw+=v;sa+=v*(best+j)}
+  return sw?Math.round((sa/sw/2-20)*4)/4:0;
 }
 const iouR=(a,b)=>{const ix=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),iy=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y)),i=ix*iy;return i/(a.w*a.h+b.w*b.h-i)};
 const ovlR=(a,b)=>{const ix=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),iy=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return ix*iy/Math.min(a.w*a.h,b.w*b.h)};
@@ -441,12 +455,14 @@ function rectCandidates(GX,GY,W,H){
   const col=(x,y0,y1)=>{y0=Math.max(0,y0);y1=Math.min(H,y1);return y1>y0?(CV[y1*W+x]-CV[y0*W+x])/(y1-y0):0};
   const row=(y,x0,x1)=>{x0=Math.max(0,x0);x1=Math.min(W,x1);return x1>x0?(RH[y*(W+1)+x1]-RH[y*(W+1)+x0])/(x1-x0):0};
   let cands=[],floor=-1;
-  for(let w=Math.round(Math.min(W,H)*.14);w<=W-2;w=Math.max(w+1,Math.round(w*1.025))){
-    const st=Math.max(1,Math.round(w/70));
+  for(let w=Math.round(Math.min(W,H)*.14);w<=W-2;w=Math.max(w+1,Math.round(w*1.035))){
+    const st=Math.max(1,Math.round(w/55));
     for(const ar of[1.36,1.40,1.44]){const h=Math.round(w*ar);if(h>H-2)continue;const e=Math.max(2,Math.round(h*.05)),ew=Math.max(2,Math.round(w*.05));
       for(let y=1;y+h<H;y+=st)for(let x=1;x+w<W;x+=st){
-        const l=col(x,y,y+h),r=col(x+w-1,y,y+h),t=row(y,x,x+w),b=row(y+h-1,x,x+w);
-        const mn=Math.min(l,r,t,b);if(mn<.2)continue;
+        // most rectangles fail on their first side, so check one side at a time
+        const l=col(x,y,y+h);if(l<.2)continue;const r=col(x+w-1,y,y+h);if(r<.2)continue;
+        const t=row(y,x,x+w);if(t<.2)continue;const b=row(y+h-1,x,x+w);if(b<.2)continue;
+        const mn=Math.min(l,r,t,b);
         // a card edge stops at the corner; a line that runs on (pocket seam, table edge) is penalised
         const ext=(col(x,y-e,y)+col(x,y+h,y+h+e)+col(x+w-1,y-e,y)+col(x+w-1,y+h,y+h+e)+row(y,x-ew,x)+row(y,x+w,x+w+ew)+row(y+h-1,x-ew,x)+row(y+h-1,x+w,x+w+ew))/8;
         const sc=.5*mn+.5*(l+r+t+b)/4-.35*ext;
@@ -469,8 +485,7 @@ function makePyramid(photo){
 const qW=q=>Math.hypot(q[1][0]-q[0][0],q[1][1]-q[0][1]);
 function hashQuad(pyr,quad){
   const w=qW(quad);let L=pyr[0];for(const l of pyr)if(w*l.s>=190)L=l;
-  const cv=warpQuad(L.data,L.w,L.h,quad.map(([x,y])=>[x*L.s,y*L.s]),HN,HM);
-  return cardHash(cv,{x:0,y:0,w:HN,h:HM});
+  return hashGray(grayWarp(L.data,L.w,L.h,quad.map(([x,y])=>[x*L.s,y*L.s])));
 }
 function variantQuad(q,s,dx,dy){
   const cx=(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4,cy=(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
@@ -480,13 +495,18 @@ function variantQuad(q,s,dx,dy){
 // best fingerprint distance over a set of variants of a quad; returns the distance and the winning quad
 function fpBest(pyr,quad,variants){
   const qs=variants.map(v=>{const q=variantQuad(quad,...v);return{q,h:hashQuad(pyr,q)}});
-  const H=IDX.H,n=IDX.n,W=IDX.words,mins=new Int32Array(qs.length).fill(1e6);
-  for(let i=0;i<n;i++){const b=i*W;for(let j=0;j<qs.length;j++){const h=qs[j].h,lim=mins[j];let d=0;for(let k=0;k<W&&d<lim;k++)d+=POP(H[b+k]^h[k]);if(d<lim)mins[j]=d}}
-  let bj=0;for(let j=1;j<qs.length;j++)if(mins[j]<mins[bj])bj=j;
-  return{d:mins[bj],quad:qs[bj].q};
+  // anything worse than "no match" is irrelevant, so stop counting bits once a card passes that cap
+  // only the overall best matters, so one running best across all variants lets most cards be dropped after a word or two
+  const H=IDX.H,n=IDX.n,W=IDX.words,hs=qs.map(q=>q.h),Q=hs.length;let m=TH.none+12,bj=0;
+  for(let i=0;i<n;i++){const b=i*W;for(let j=0;j<Q;j++){const h=hs[j];let d=0;for(let k=0;k<W&&d<m;k++)d+=POP(H[b+k]^h[k]);if(d<m){m=d;bj=j}}}
+  return{d:m,quad:qs[bj].q};
 }
 const V_DETECT=[[1,0,0],[1.06,0,0],[1.12,0,0],[1.18,0,0]];
 const V_GRID=(()=>{const v=[];for(const s of[.97,1.04,1.11])for(const dx of[-.06,0,.06])for(const dy of[-.05,0,.05])v.push([s,dx,dy]);return v})();
+const V_POS=(()=>{const v=[];for(const dx of[-.06,0,.06])for(const dy of[-.05,0,.05])v.push([1.04,dx,dy]);return v})();
+const V_SIZE=[[.94,0,0],[1.07,0,0],[1.12,0,0],[1,-.03,0],[1,.03,0],[1,0,-.03],[1,0,.03]];
+// closer look, coarse to fine: find the position first (9 tries), then fine-tune size and position around it (6 more)
+function fpRefine(pyr,quad){const a=fpBest(pyr,quad,V_POS),b=fpBest(pyr,a.quad,V_SIZE);return b.d<a.d?b:a}
 const V_FINE=[[1,0,0],[.96,0,0],[1.04,0,0],[1,-.02,0],[1,.02,0],[1,0,-.02],[1,0,.02]];
 async function detectCards(photo,onStep){
   const sc0=DET_LONG/Math.max(photo.width,photo.height),W=Math.round(photo.width*sc0),H=Math.round(photo.height*sc0);
@@ -501,7 +521,7 @@ async function detectCards(photo,onStep){
   const toWork=([x,y])=>{x-=cx;y-=cy;return[(cx+x*co+y*si)*sc0,(cy-x*si+y*co)*sc0]};
   const rectOf=q=>{const p=q.map(toWork),xs=p.map(v=>v[0]),ys=p.map(v=>v[1]);const x=Math.min(...xs),y=Math.min(...ys);return{x,y,w:Math.max(...xs)-x,h:Math.max(...ys)-y}};
   const quadOf=r=>[[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]].map(toPhoto);
-  for(const r of rects){r.quad=quadOf(r);r.d=999}
+  for(const r of rects){r.quad=r.quad0=quadOf(r);r.d=999}
   if(!IDX) return order(rects.filter((r,i)=>i<12&&r.sc>rects[0].sc*.8).map(r=>({...r,sure:false})));
   const pyr=makePyramid(photo);
   onStep?.("Checking which outlines are cards…");
@@ -509,6 +529,11 @@ async function detectCards(photo,onStep){
     const f=fpBest(pyr,rects[i].quad,V_DETECT);rects[i].d=f.d;rects[i].quad=f.quad;Object.assign(rects[i],rectOf(f.quad))}
   const keep=[];
   for(const r of [...rects].sort((p,q)=>p.d-q.d||q.sc-p.sc)){if(r.d>TH.acc)break;if(keep.every(k=>ovlR(k,r)<.35))keep.push({...r,sure:true})}
+  // strong outlines that the quick check didn't confirm get a closer look (more offsets and sizes)
+  {const ref=keep.length?median(keep.map(k=>k.sc)):rects[0]?.sc||0,mw0=keep.length?median(keep.map(k=>k.w)):0;let tries=0;
+   for(const r of [...rects].sort((p,q)=>q.sc-p.sc)){if(tries>=4||r.sc<ref*.6)break;if(r.d<=TH.acc||!keep.every(k=>ovlR(k,r)<.35))continue;
+     if(mw0&&Math.abs(r.w/mw0-1)>.3)continue;tries++;await new Promise(z=>setTimeout(z,0));
+     const f=fpRefine(pyr,r.quad0),fr=rectOf(f.quad);if(f.d<=TH.grid&&keep.every(k=>ovlR(k,fr)<.35))keep.push({...fr,sc:r.sc,quad:f.quad,d:f.d,sure:true})}}
   // binder pages: cards sit on a regular grid, so check every grid spot the confirmed cards imply
   if(keep.length>=2){
     onStep?.("Checking the rest of the page…");
@@ -524,7 +549,7 @@ async function detectCards(photo,onStep){
     if(xs.length*ys.length<=30) for(const gy of ys)for(const gx of xs){
       const r={x:gx.v-mw/2,y:gy.v-mh/2,w:mw,h:mh};if(!keep.every(k=>ovlR(k,r)<.35))continue;
       await new Promise(z=>setTimeout(z,0));
-      const f=fpBest(pyr,quadOf(r),V_GRID),fr=rectOf(f.quad);
+      const f=fpRefine(pyr,quadOf(r)),fr=rectOf(f.quad);
       if(f.d<=TH.grid&&keep.every(k=>ovlR(k,fr)<.35)){keep.push({...fr,quad:f.quad,d:f.d,sure:true});continue}
       // unconfirmed spot inside the page (glare, foil, empty pocket): offer it as an unsure outline
       const edgeHit=rects.find(c=>iouR(c,r)>.45&&c.sc>=Math.min(...keep.map(k=>k.sc??1))*.6);
@@ -564,7 +589,7 @@ async function addCardAt(x,y){
   const w=others.length?median(others.map(qW)):sc.img.width*.3,h=w*88/63;
   const card={quad:[[x-w/2,y-h/2],[x+w/2,y-h/2],[x+w/2,y+h/2],[x-w/2,y+h/2]],sure:false,d:1e6,on:true,manual:true};
   sc.cards.push(card);sc.adding=false;render();
-  if(IDX&&sc.pyr){const f=fpBest(sc.pyr,card.quad,V_GRID);if(f.d<=TH.grid){card.quad=f.quad;card.d=f.d;card.sure=true;render()}}
+  if(IDX&&sc.pyr){const f=fpRefine(sc.pyr,card.quad);if(f.d<=TH.grid){card.quad=f.quad;card.d=f.d;card.sure=true;render()}}
 }
 async function runScan(){
   const sc=S.scan,sel=(sc?.cards||[]).filter(c=>c.on);if(!sel.length) return;
@@ -589,7 +614,10 @@ async function matchOutlines(sel,pyr){
   const tops=[];
   for(let i=0;i<sel.length;i++){
     setProgress(.05+.45*i/sel.length,`Comparing card ${i+1} of ${sel.length}…`);await new Promise(r=>setTimeout(r,0));
-    tops.push(searchIndex(V_FINE.map(v=>hashQuad(pyr,variantQuad(sel[i].quad,...v))),TOPK));
+    let top=searchIndex(V_FINE.map(v=>hashQuad(pyr,variantQuad(sel[i].quad,...v))),TOPK);
+    // unsure result: take a closer look around the outline (it may be slightly off the card) and search again
+    if(!top.length||top[0].d>TH.weak){const f=fpRefine(pyr,sel[i].quad);if(f.d<top[0]?.d){sel[i].quad=f.quad;top=searchIndex(V_FINE.map(v=>hashQuad(pyr,variantQuad(f.quad,...v))),TOPK)}}
+    tops.push(top);
   }
   setProgress(.55,"Fetching card details…");
   const ids=[...new Set(tops.flat().map(t=>t.id))],raw=new Map();
