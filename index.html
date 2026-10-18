@@ -154,30 +154,23 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const LAYOUTS = [
-  {id:"1x1",rows:1,cols:1,label:"Single"},
-  {id:"2x2",rows:2,cols:2,label:"4-pocket"},
-  {id:"3x3",rows:3,cols:3,label:"9-pocket"},
-  {id:"3x4",rows:3,cols:4,label:"12-pocket"}
-];
-let CARD_W = 680, CARD_H = Math.round(680*88/63); // 63×88 mm card ratio
-const APP_VERSION = "v8";
+const APP_VERSION = "v9";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
-const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",ocrLangs:"eng+deu",apiKey:"",model:"claude-sonnet-5-5",inset:0,layout:"3x3",binder:"Binder 1"};
+const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){toast("Couldn't save: storage full or blocked")}}
 const S = {
   tab:"scan",
   settings:Object.assign({},DEFAULT_SETTINGS,load(SK_SET,{})),
   coll:load(SK,[]),
-  scan:null,       // {img canvas, corners[4], layout}
+  scan:null,       // {img canvas, pyr, cards:[{quad,sure,d,on}], detecting, adding}
   review:null,     // [{...}]
   scanning:false,
   progress:0,
   q:"",sort:"value"
 };
 const saveColl=()=>save(SK,S.coll), saveSet=()=>save(SK_SET,S.settings);
-if(!S.settings.v5){if(S.settings.engine==="ocr")S.settings.engine="image";S.settings.inset=0;S.settings.v5=true;saveSet()}
+if(S.settings.engine!=="claude")S.settings.engine="image";
 const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36);
@@ -233,14 +226,14 @@ function cmLink(e){
 function fileToCanvas(file){
   return new Promise((ok,bad)=>{
     const img=new Image(); const url=URL.createObjectURL(file);
-    img.onload=()=>{const max=4000,s=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
+    img.onload=()=>{const max=2600,s=Math.min(1,max/Math.max(img.naturalWidth,img.naturalHeight));
       const c=document.createElement("canvas");c.width=Math.round(img.naturalWidth*s);c.height=Math.round(img.naturalHeight*s);
-      c.getContext("2d").drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);ok(c)};
+      const x=c.getContext("2d",{willReadFrequently:true});x.imageSmoothingQuality="high";x.drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);ok(c)};
     img.onerror=()=>{URL.revokeObjectURL(url);bad(new Error("That file isn't an image this browser can open."))};
     img.src=url;
   });
 }
-function rotateCanvas(src){const c=document.createElement("canvas");c.width=src.height;c.height=src.width;const x=c.getContext("2d");x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(src,0,0);return c}
+function rotateCanvas(src){const c=document.createElement("canvas");c.width=src.height;c.height=src.width;const x=c.getContext("2d",{willReadFrequently:true});x.translate(c.width,0);x.rotate(Math.PI/2);x.drawImage(src,0,0);return c}
 // square→quad homography (Heckbert). corners: TL,TR,BR,BL
 function homography(p){
   const [x0,y0]=p[0],[x1,y1]=p[1],[x2,y2]=p[2],[x3,y3]=p[3];
@@ -251,36 +244,12 @@ function homography(p){
     a=x1-x0+g*x1;b=x3-x0+h*x3;c=x0;d=y1-y0+g*y1;e=y3-y0+h*y3;f=y0}
   return (u,v)=>{const w=g*u+h*v+1;return[(a*u+b*v+c)/w,(d*u+e*v+f)/w]};
 }
-// Warp quad into a flat page of rows×cols card cells
-function warpPage(src,corners,rows,cols){
-  const W=cols*CARD_W,H=rows*CARD_H, map=homography(corners);
-  const sctx=src.getContext("2d"), sd=sctx.getImageData(0,0,src.width,src.height).data, sw=src.width, sh=src.height;
-  const out=document.createElement("canvas");out.width=W;out.height=H;
-  const octx=out.getContext("2d"), od=octx.createImageData(W,H), o=od.data;
-  for(let y=0;y<H;y++){const v=(y+.5)/H;for(let x=0;x<W;x++){
-    let [fx,fy]=map((x+.5)/W,v); fx-=.5; fy-=.5;
-    const oi=(y*W+x)*4; o[oi+3]=255;
-    const x0=Math.floor(fx),y0=Math.floor(fy);
-    if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
-    const ax=fx-x0,ay=fy-y0,i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4;
-    for(let k=0;k<3;k++) o[oi+k]=(sd[i00+k]*(1-ax)+sd[i10+k]*ax)*(1-ay)+(sd[i01+k]*(1-ax)+sd[i11+k]*ax)*ay;
-  }}
-  octx.putImageData(od,0,0);return out;
-}
-// Grid with a draggable point at every crossing: the 4 outer corners set a perspective grid,
-// every other crossing stores its own nudge so the grid can follow a bulging page.
-function meshPoints(sc,L){
-  const map=homography(sc.corners),R=L.rows,C=L.cols,n=(R+1)*(C+1);
-  if(!sc.off||sc.off.length!==n) sc.off=Array.from({length:n},()=>[0,0]);
-  const pts=[];for(let r=0;r<=R;r++)for(let c=0;c<=C;c++){const [x,y]=map(c/C,r/R),o=sc.off[r*(C+1)+c];pts.push([x+o[0],y+o[1]])}
-  return pts;
-}
-const cellQuad=(pts,C,r,c)=>[pts[r*(C+1)+c],pts[r*(C+1)+c+1],pts[(r+1)*(C+1)+c+1],pts[(r+1)*(C+1)+c]];
-function warpQuad(sd,sw,sh,quad,W,H,ins=0){
+// cut a (perspective) quad out of raw RGBA pixels into a flat W×H canvas, bilinear
+function warpQuad(sd,sw,sh,quad,W,H){
   const map=homography(quad),out=document.createElement("canvas");out.width=W;out.height=H;
-  const octx=out.getContext("2d"),od=octx.createImageData(W,H),o=od.data,span=1-2*ins;
-  for(let y=0;y<H;y++){const v=ins+span*(y+.5)/H;for(let x=0;x<W;x++){
-    let [fx,fy]=map(ins+span*(x+.5)/W,v);fx-=.5;fy-=.5;
+  const octx=out.getContext("2d",{willReadFrequently:true}),od=octx.createImageData(W,H),o=od.data;
+  for(let y=0;y<H;y++){const v=(y+.5)/H;for(let x=0;x<W;x++){
+    let [fx,fy]=map((x+.5)/W,v);fx-=.5;fy-=.5;
     const oi=(y*W+x)*4;o[oi+3]=255;
     const x0=Math.floor(fx),y0=Math.floor(fy);
     if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
@@ -289,178 +258,22 @@ function warpQuad(sd,sw,sh,quad,W,H,ins=0){
   }}
   octx.putImageData(od,0,0);return out;
 }
-function warpCells(sc,L,W,H,ins){
-  const src=sc.img,sd=src.getContext("2d").getImageData(0,0,src.width,src.height).data,pts=meshPoints(sc,L),cells=[];
-  for(let r=0;r<L.rows;r++)for(let c=0;c<L.cols;c++)cells.push({r,c,cv:warpQuad(sd,src.width,src.height,cellQuad(pts,L.cols,r,c),W,H,ins)});
-  return cells;
-}
-function cropCell(page,r,c,insetPct){
-  const ix=CARD_W*insetPct/100, iy=CARD_H*insetPct/100;
-  const out=document.createElement("canvas");out.width=CARD_W;out.height=CARD_H;
-  out.getContext("2d").drawImage(page,c*CARD_W+ix,r*CARD_H+iy,CARD_W-2*ix,CARD_H-2*iy,0,0,CARD_W,CARD_H);return out;
-}
-// Region of a card → enlarged high-contrast canvas for OCR
-function region(cell,x0,y0,x1,y1,scale=2,mode="plain"){
-  const w=(x1-x0)*cell.width,h=(y1-y0)*cell.height;
-  const c=document.createElement("canvas");c.width=Math.round(w*scale);c.height=Math.round(h*scale);
-  const x=c.getContext("2d");x.imageSmoothingQuality="high";x.drawImage(cell,x0*cell.width,y0*cell.height,w,h,0,0,c.width,c.height);
-  const id=x.getImageData(0,0,c.width,c.height),d=id.data;let sum=0;
-  for(let i=0;i<d.length;i+=4){const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];d[i]=d[i+1]=d[i+2]=g;sum+=g}
-  const mean=sum/(d.length/4), inv=mean<115;
-  if(mode==="bin"){ // Otsu threshold, text forced dark on white
-    const hist=new Array(256).fill(0),n=d.length/4;for(let i=0;i<d.length;i+=4)hist[d[i]|0]++;
-    let sumAll=0;for(let t=0;t<256;t++)sumAll+=t*hist[t];
-    let wB=0,sB=0,best=0,th=128;for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist[t];
-      const mB=sB/wB,mF=(sumAll-sB)/wF,b=wB*wF*(mB-mF)**2;if(b>best){best=b;th=t}}
-    for(let i=0;i<d.length;i+=4){let g=d[i]>th?255:0;if(inv)g=255-g;d[i]=d[i+1]=d[i+2]=g}
-  } else
-  for(let i=0;i<d.length;i+=4){let g=d[i];if(inv)g=255-g;g=Math.max(0,Math.min(255,(g-128)*1.6+150));d[i]=d[i+1]=d[i+2]=g}
-  x.putImageData(id,0,0);return c;
-}
-const thumb=(cv,w=160)=>{const c=document.createElement("canvas");c.width=w;c.height=Math.round(cv.height*w/cv.width);c.getContext("2d").drawImage(cv,0,0,c.width,c.height);return c.toDataURL("image/jpeg",.7)};
-
-/* ===================== recognition: on-device OCR ===================== */
-let ocrWorker=null, ocrLangs=null;
-function loadScript(src){return new Promise((ok,bad)=>{const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=()=>bad(new Error("Couldn't load the text-recognition engine. Check your connection."));document.head.appendChild(s)})}
-async function getOcr(){
-  if(ocrWorker&&ocrLangs===S.settings.ocrLangs) return ocrWorker;
-  if(!window.Tesseract) await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
-  if(ocrWorker) await ocrWorker.terminate();
-  ocrWorker=await Tesseract.createWorker(S.settings.ocrLangs,1);ocrLangs=S.settings.ocrLangs;return ocrWorker;
-}
-const clean=s=>s.replace(/[|_~^`"«»{}\[\]<>\\]/g," ").replace(/[^\p{L}\p{N}' ,\-]/gu," ").replace(/\s+/g," ").trim();
+const thumb=(cv,w=160)=>{const c=document.createElement("canvas");c.width=w;c.height=Math.round(cv.height*w/cv.width);c.getContext("2d").drawImage(cv,0,0,c.width,c.height);return c.toDataURL("image/jpeg",.75)};
 function dice(a,b){a=a.toLowerCase().replace(/[^a-z]/g,"");b=b.toLowerCase().replace(/[^a-z]/g,"");if(a.length<2||b.length<2)return 0;
   const m=new Map();for(let i=0;i<a.length-1;i++){const k=a.slice(i,i+2);m.set(k,(m.get(k)||0)+1)}
   let n=0;for(let i=0;i<b.length-1;i++){const k=b.slice(i,i+2),v=m.get(k);if(v){n++;m.set(k,v-1)}}return 2*n/(a.length+b.length-2)}
-const LANGS={EN:"en",DE:"de",FR:"fr",IT:"it",ES:"es",PT:"pt",JA:"ja",JP:"ja",KO:"ko",RU:"ru",CS:"zhs",CT:"zht"};
-const stripZ=n=>String(n||"").replace(/^0+(?=\d)/,"").toLowerCase();
-// Cards sit loose in binder pockets, so nothing assumes an exact position:
-// read the whole top band for the name and the whole bottom band for the set line.
-const DIGITFIX={O:"0",Q:"0",D:"0",I:"1",L:"1","|":"1",T:"1",S:"5",B:"8",Z:"2"};
-const fixNum=t=>t.replace(/[OQDILT|SBZ]/g,ch=>DIGITFIX[ch]).replace(/^0+(?=\d)/,"");
-let SETS=null; // real set codes from Scryfall, cached for a week
-async function loadSets(){
-  if(SETS) return SETS;
-  const c=load("binderscan.sets",null);
-  if(c&&Date.now()-c.t<7*864e5){SETS=new Set(c.codes);return SETS}
-  try{const r=await sf("/sets");SETS=new Set((r?.data||[]).map(x=>x.code.toUpperCase()));save("binderscan.sets",{t:Date.now(),codes:[...SETS]})}catch{SETS=new Set()}
-  return SETS;
-}
-function parseFoot(text,sets=SETS||new Set()){
-  const lines=text.toUpperCase().split("\n").map(l=>l.trim()).filter(Boolean);
-  let num=null,set=null,lang=null,m;
-  // number: "123/280", "R 0123" / "R0123", "0123 R" — search bottom-up
-  for(let i=lines.length-1;i>=0&&!num;i--){const t=lines[i];
-    if(/WIZARD|COAST|©|™|SQUARE|ENIX|\b(?:19|20)\d\d\b/.test(t)&&!/\//.test(t)) continue; // copyright lines
-    if((m=t.match(/([0-9OQDILT|]{2,4})\s*\/\s*[0-9OQDILT|]{2,4}/))&&/\d/.test(m[1])) num=fixNum(m[1]);
-    else if((m=t.match(/\b[CURMLST]\s*([0-9OQDILT|]{3,4})\b/))&&/\d{2}/.test(m[1])) num=fixNum(m[1]);
-    else if((m=t.match(/\b([0-9OQDILT|]{3,4})\s+[CURMLST]\b/))&&/\d{2}/.test(m[1])) num=fixNum(m[1]);
-    if(num&&!/^\d+$/.test(num)) num=null;
-  }
-  // set: a real set code, preferably right before the language tag ("BRO • EN", "FIN SEN"), bottom-up
-  let fallback=null;
-  for(let i=lines.length-1;i>=Math.max(0,lines.length-8)&&!set;i--){
-    const toks=[...lines[i].matchAll(/([A-Z0-9]{3,5})(?=[^A-Z0-9]{0,3}S?(EN|DE|FR|IT|ES|PT|JA|JP|KO|RU)\b)/g)];
-    for(const t of toks) if(sets.has(t[1])&&/[A-Z]/.test(t[1])){set=t[1];lang=LANGS[t[2]];break}
-    if(!fallback) for(const t of lines[i].matchAll(/\b([A-Z][A-Z0-9]{2,4})\b/g)) if(sets.has(t[1])&&!/^(ONE|WAR|CON|MID|THE|AND|CMD|TOP|ALL|ICE|NEW|OLD|SUN)$/.test(t[1])){fallback=t[1];break}
-  }
-  return {set:set||fallback,num,lang};
-}
-function nameCandidates(text){
-  const lines=text.split("\n").map(l=>clean(l).replace(/^[^\p{L}]+|[^\p{L}']+$/gu,"")).filter(l=>(l.match(/\p{L}/gu)||[]).length>=4);
-  const out=[];
-  for(let i=0;i<lines.length&&out.length<6;i++){
-    if(!out.includes(lines[i])) out.push(lines[i]);
-    if(lines[i+1]){const j=lines[i]+" "+lines[i+1];if(j.length<=40) out.push(j)} // names that wrap or break into two OCR lines
-  }
-  return out.slice(0,6);
-}
-async function ocrCell(cell){
-  const w=await getOcr(); await loadSets();
-  await w.setParameters({tessedit_pageseg_mode:"11"});
-  const top=await w.recognize(region(cell,0,0,1,.3,1000/cell.width,"plain"));
-  const bot=await w.recognize(region(cell,0,.62,1,1,1700/cell.width,"plain"));
-  let f=parseFoot(bot.data.text||"");
-  if(!f.set||!f.num){const bot2=await w.recognize(region(cell,0,.62,1,1,1700/cell.width,"bin"));const g=parseFoot(bot2.data.text||"");f={set:f.set||g.set,num:f.num||g.num,lang:f.lang||g.lang}}
-  return {names:nameCandidates(top.data.text||""),...f};
-}
-async function identifyOcr(cell){
-  const o=await ocrCell(cell);
-  const read=[o.names[0]||"no name read",o.set?o.set+(o.num?" #"+o.num:""):""].filter(Boolean).join(" · ");
-  let card=null,score=0;
-  if(o.set&&o.num){
-    try{const c=await bySetNum(o.set,o.num,o.lang);
-      if(c){const sc=Math.max(0,...o.names.map(n=>Math.max(dice(n,c.name),dice(n,c.printed_name||""))));
-        if(!o.names.length||sc>.4){card=c;score=1}}}catch{}
-  }
-  if(!card){
-    for(const n of o.names){try{const c=await byName(n);if(c){const sc=Math.max(dice(n,c.name),dice(n,c.printed_name||""));if(sc>score){card=c;score=sc}}}catch{}
-      if(score>.85) break}
-    if(card&&score<.45) card=null; // OCR noise that happened to fuzzy-match something
-  }
-  if(!card) return {ocr:o.names.length||o.set?read:"Empty pocket or unreadable",card:null,status:"none"};
-  const v=await chooseVersion(cell,card,{set:o.set,num:o.num});
-  return {ocr:read,card:v.card,status:v.sure?"matched":"guess"};
-}
-
-/* ===================== version picking by artwork ===================== */
-// Compares the art box of your photo with each printing's art, then uses the set code / number to break ties.
-const printCache=new Map(), artCache=new Map();
+const printCache=new Map();
 async function printsRaw(oracle){
   if(printCache.has(oracle)) return printCache.get(oracle);
-  let r=await sf("/cards/search?order=released&dir=desc&unique=prints&q="+encodeURIComponent(`oracleid:${oracle} game:paper`));
-  const list=r?.data||[];
-  printCache.set(oracle,list);return list;
-}
-const VW=12,VH=17;
-const vctx=(()=>{const c=document.createElement("canvas");c.width=VW;c.height=VH;return c.getContext("2d",{willReadFrequently:true})})();
-function vecOf(src,sx,sy,sw,sh){
-  vctx.drawImage(src,sx,sy,sw,sh,0,0,VW,VH);
-  const d=vctx.getImageData(0,0,VW,VH).data,n=VW*VH,v=new Float32Array(n*3);
-  for(let ch=0;ch<3;ch++){let m=0;for(let i=0;i<n;i++)m+=d[i*4+ch];m/=n;for(let i=0;i<n;i++)v[ch*n+i]=d[i*4+ch]-m}
-  let q=0;for(const a of v)q+=a*a;q=Math.sqrt(q)||1;for(let i=0;i<v.length;i++)v[i]/=q;return v;
-}
-// Whole-card vectors at many positions/sizes inside the pocket, since the card can sit anywhere in it.
-function pocketVecs(cell){
-  const out=[],W=cell.width,H=cell.height;
-  for(const s of [.72,.78,.84,.9,.96,1]){
-    let w=W*s,h=w*88/63; if(h>H){h=H;w=h*63/88}
-    for(let i=0;i<7;i++)for(let j=0;j<7;j++) out.push(vecOf(cell,(W-w)*i/6,(H-h)*j/6,w,h));
-  }
-  return out;
-}
-const loadImg=url=>new Promise((ok,bad)=>{const i=new Image();i.crossOrigin="anonymous";i.onload=()=>ok(i);i.onerror=bad;i.src=url});
-async function artOf(card){
-  const url=card.image_uris?.small||card.card_faces?.[0]?.image_uris?.small; if(!url) return null;
-  if(artCache.has(url)) return artCache.get(url);
-  const img=await loadImg(url); const v=vecOf(img,0,0,img.naturalWidth,img.naturalHeight); artCache.set(url,v); return v;
-}
-async function chooseVersion(cell,card,hint={}){
-  let list;try{list=await printsRaw(card.oracle_id)}catch{list=[]}
-  if(!list.length) return {card,sure:false};
-  if(list.length===1) return {card:list[0],sure:true};
-  const hs=(hint.set||"").toLowerCase(), hn=stripZ(hint.num);
-  if(hs&&hn){const h=list.find(p=>p.set===hs&&stripZ(p.collector_number)===hn);if(h) return {card:card.set===hs?card:h,sure:true}}
-  const groups=new Map();for(const p of list.slice(0,60)){const k=(p.illustration_id||p.id)+"|"+(p.frame||"")+(p.full_art?"F":"")+(p.border_color||"")+((p.frame_effects||[]).join());if(!groups.has(k))groups.set(k,[]);groups.get(k).push(p)}
-  let scored;
-  try{
-    const targets=pocketVecs(cell);
-    scored=await Promise.all([...groups.values()].map(async ps=>{const v=await artOf(ps[0]);let s=-1;
-      if(v)for(const t of targets){let d=0;for(let i=0;i<v.length;i++)d+=v[i]*t[i];if(d>s)s=d}return {ps,s}}));
-  }catch{return {card,sure:false}} // images blocked: keep name match, ask user to check
-  scored.sort((a,b)=>b.s-a.s);
-  const best=scored[0],margin=best.s-(scored[1]?.s??-1);
-  let pick=best.ps.find(p=>hs&&p.set===hs)||best.ps.find(p=>hn&&stripZ(p.collector_number)===hn)||best.ps[0];
-  const sure=best.s>.6&&margin>.08&&(best.ps.length===1||pick.set===hs);
-  return {card:pick,sure};
+  const r=await sf("/cards/search?order=released&dir=desc&unique=prints&q="+encodeURIComponent(`oracleid:${oracle} game:paper`));
+  const list=r?.data||[];printCache.set(oracle,list);return list;
 }
 
 /* ===================== recognition: Claude vision (optional key) ===================== */
 async function identifyClaude(cells){
   const content=[];
-  cells.forEach((x,i)=>{const c=document.createElement("canvas");c.width=600;c.height=Math.round(600*CARD_H/CARD_W);c.getContext("2d").drawImage(x.cv,0,0,c.width,c.height);
-    content.push({type:"text",text:`Card ${i+1} (row ${x.r+1}, col ${x.c+1}):`},{type:"image",source:{type:"base64",media_type:"image/jpeg",data:c.toDataURL("image/jpeg",.88).split(",")[1]}})});
-  content.push({type:"text",text:`Each image is one binder pocket holding a Magic: The Gathering card (or empty). For every card read the name and, most importantly, the tiny set code and collector number printed at the bottom-left (e.g. "0123 R" over "MOM • EN", or "123/280"). Return ONLY JSON: {"cards":[{"index":1,"empty":false,"name":"English card name","printed_name":"name as printed","set_code":"set code or null","collector_number":"number or null","language":"en|de|fr|it|es|pt|ja|...","foil":false}]}. Use null when you cannot read a field; never guess a set code. "foil" is true only if a foil sheen is clearly visible.`});
+  cells.forEach((x,i)=>{content.push({type:"text",text:`Card ${i+1}:`},{type:"image",source:{type:"base64",media_type:"image/jpeg",data:x.cv.toDataURL("image/jpeg",.88).split(",")[1]}})});
+  content.push({type:"text",text:`Each image is one Magic: The Gathering card cut out of a photo. For every card read the name and, most importantly, the tiny set code and collector number printed at the bottom-left (e.g. "0123 R" over "MOM • EN", or "123/280"). Return ONLY JSON: {"cards":[{"index":1,"empty":false,"name":"English card name","printed_name":"name as printed","set_code":"set code or null","collector_number":"number or null","language":"en|de|fr|it|es|pt|ja|...","foil":false}]}. Use null when you cannot read a field; never guess a set code. "foil" is true only if a foil sheen is clearly visible.`});
   const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{
     "content-type":"application/json","x-api-key":S.settings.apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
     body:JSON.stringify({model:S.settings.model,max_tokens:3000,messages:[{role:"user",content}]})});
@@ -469,66 +282,71 @@ async function identifyClaude(cells){
   const m=txt.match(/\{[\s\S]*\}/); if(!m) throw new Error("Claude didn't return a card list.");
   return JSON.parse(m[0]).cards||[];
 }
-async function resolveClaude(x,cell){
-  if(!x||x.empty) return {ocr:"Empty pocket",card:null,status:"none",empty:true};
+async function resolveClaude(x){
+  if(!x||x.empty) return {ocr:"Empty",card:null,status:"none"};
   const read=[x.printed_name||x.name||"unreadable",x.set_code?x.set_code+(x.collector_number?" #"+x.collector_number:""):""].filter(Boolean).join(" · ");
-  let card=null;
-  if(x.set_code&&x.collector_number){try{const c=await bySetNum(x.set_code,x.collector_number,x.language);if(c&&(!x.name||dice(x.name,c.name)>.4))card=c}catch{}}
+  let card=null,exact=false;
+  if(x.set_code&&x.collector_number){try{const c=await bySetNum(x.set_code,x.collector_number,x.language);if(c&&(!x.name||dice(x.name,c.name)>.4)){card=c;exact=true}}catch{}}
   if(!card&&x.name){try{card=await byName(x.name)}catch{}}
   if(!card) return {ocr:read,card:null,status:"none"};
-  const v=await chooseVersion(cell,card,{set:x.set_code,num:x.collector_number});
-  return {ocr:read,card:v.card,status:v.sure?"matched":"guess",foil:!!x.foil};
+  return {ocr:"Claude read: "+read,card:slim(card),status:exact?"matched":"guess",foil:!!x.foil};
 }
 
-/* ===================== recognition: artwork matching (default) ===================== */
-// Each card is compared with a hash of every printing on Scryfall (data/index.bin, built by the
-// "Build card index" GitHub Action), then the closest candidates are re-checked against their real images.
-const TOPK=20, WEAK_D=36, NONE_D=44;
-let IDX=null;
+/* ===================== recognition: artwork fingerprint ===================== */
+// Each card is compared with a fingerprint of every paper printing on Scryfall (data/index2.bin, built by the
+// "Build card index" GitHub Action). Version 2 fingerprints a high-pass and a gradient view of the card, which
+// ignore smooth glare and sleeve haze; version 1 (plain brightness) is still understood as a fallback.
+const TOPK=20;
+let IDX=null, TH={weak:36,none:44,acc:30,grid:34,pctTop:24,pctZero:64};
 async function loadIndex(){
   if(IDX) return IDX;
-  let meta;
-  try{const r=await fetch("data/meta.json",{cache:"no-store"});if(!r.ok)return null;meta=await r.json()}catch{return null}
-  const key=new URL("data/index.bin?v="+meta.built,location.href).href;
+  let meta=null,file=null;
+  for(const [m,f] of [["data/meta2.json","data/index2.bin"],["data/meta.json","data/index.bin"]]){
+    try{const r=await fetch(m,{cache:"no-store"});if(r.ok){meta=await r.json();file=f;break}}catch{}
+  }
+  if(!meta) return null;
+  const key=new URL(file+"?v="+meta.built,location.href).href;
   let cache=null;try{cache=await caches.open("binderscan-index")}catch{}
   let res=cache?await cache.match(key):null;
   if(!res){
-    setProgress(.03,`Downloading card database (${(meta.count*33/1e6).toFixed(1)} MB, first time only)…`);
-    res=await fetch("data/index.bin",{cache:"no-store"});if(!res.ok) return null;
+    setProgress(.03,`Downloading card database (${(meta.count*(16+4*(meta.words||4))/1e6).toFixed(1)} MB, first time only)…`);
+    res=await fetch(file,{cache:"no-store"});if(!res.ok) return null;
     if(cache){try{await cache.put(key,res.clone());for(const k of await cache.keys())if(k.url!==key)cache.delete(k)}catch{}}
   }
   const buf=await res.arrayBuffer(),dv=new DataView(buf);
   if(String.fromCharCode(...new Uint8Array(buf,0,4))!=="BSIX") return null;
-  const n=dv.getUint32(8,true);let o=16;
+  const v=dv.getUint32(4,true),n=dv.getUint32(8,true),words=v>=2?dv.getUint32(12,true):4;let o=16;
   const ids=new Uint8Array(buf,o,16*n);o+=16*n;const faces=new Uint8Array(buf,o,n);o+=n;o=(o+3)&~3;
-  IDX={n,ids,faces,H:new Uint32Array(buf,o,4*n),built:meta.built};return IDX;
+  IDX={v,n,ids,faces,words,H:new Uint32Array(buf,o,words*n),built:meta.built};
+  if(v>=2) TH={weak:64,none:72,acc:62,grid:66,pctTop:40,pctZero:90};
+  return IDX;
 }
 function idAt(i){let h="";for(let k=0;k<16;k++){h+=IDX.ids[i*16+k].toString(16).padStart(2,"0");if(k===3||k===5||k===7||k===9)h+="-"}return h}
 const POP=x=>{x-=(x>>>1)&0x55555555;x=(x&0x33333333)+((x>>>2)&0x33333333);return(((x+(x>>>4))&0x0F0F0F0F)*0x01010101)>>>24};
 function searchIndex(qs,K){
-  const H=IDX.H,n=IDX.n,top=[];let worst=999;
+  const H=IDX.H,n=IDX.n,W=IDX.words,top=[];let worst=1e6;
   for(let i=0;i<n;i++){
-    const b=i*4,h0=H[b],h1=H[b+1],h2=H[b+2],h3=H[b+3];let m=999;
-    for(const q of qs){const d=POP(h0^q[0])+POP(h1^q[1])+POP(h2^q[2])+POP(h3^q[3]);if(d<m)m=d}
+    const b=i*W;let m=top.length<K?1e6:worst;
+    for(const q of qs){let d=0;for(let k=0;k<W&&d<m;k++)d+=POP(H[b+k]^q[k]);if(d<m)m=d}
     if(m<worst||top.length<K){let j=top.length;while(j>0&&top[j-1].d>m)j--;top.splice(j,0,{i,d:m});if(top.length>K)top.pop();worst=top[top.length-1].d}
   }
   return top.map(t=>({id:idAt(t.i),back:IDX.faces[t.i]===1,d:t.d}));
 }
-// perceptual hash: must match build_index.py
+// perceptual hash maths: must match tools in build_index.py
 const HN=128,HM=176;
 const DCT8=(()=>{const N=32,m=new Float64Array(8*N);for(let k=0;k<8;k++){const c=k?Math.sqrt(2/N):Math.sqrt(1/N);for(let n=0;n<N;n++)m[k*N+n]=c*Math.cos(Math.PI*(2*n+1)*k/(2*N))}return m})();
-function rsWeights(a,b,N,len){
-  const m=new Float64Array(N*len),step=(b-a)/N;
-  for(let i=0;i<N;i++){const lo=a+step*i,hi=a+step*(i+1);let sum=0;
-    for(let p=Math.max(0,Math.floor(lo));p<Math.min(len,Math.ceil(hi));p++){const w=Math.min(hi,p+1)-Math.max(lo,p);if(w>0){m[i*len+p]=w;sum+=w}}
-    if(sum)for(let p=0;p<len;p++)m[i*len+p]/=sum}
-  return m;
+function rsWeights(a,b,N,len){ // area-average resampling, stored sparse: per output, first source index + weights
+  const out=[],step=(b-a)/N;
+  for(let i=0;i<N;i++){const lo=a+step*i,hi=a+step*(i+1),w=[];let p0=-1,sum=0;
+    for(let p=Math.max(0,Math.floor(lo));p<Math.min(len,Math.ceil(hi));p++){const v=Math.min(hi,p+1)-Math.max(lo,p);if(v>0){if(p0<0)p0=p;w.push(v);sum+=v}}
+    out.push({a:p0,w:w.map(v=>v/sum)})}
+  return out;
 }
 const RW={full:[rsWeights(0,HM,32,HM),rsWeights(0,HN,32,HN)],art:[rsWeights(.11*HM,.56*HM,32,HM),rsWeights(.08*HN,.92*HN,32,HN)]};
-function boxResize(g,[wy,wx]){
+function boxResize(g,[sy,sx]){
   const N=32,t=new Float64Array(HM*N),o=new Float64Array(N*N);
-  for(let y=0;y<HM;y++)for(let i=0;i<N;i++){let s=0;const r=i*HN,gr=y*HN;for(let p=0;p<HN;p++){const w=wx[r+p];if(w)s+=w*g[gr+p]}t[y*N+i]=s}
-  for(let j=0;j<N;j++)for(let i=0;i<N;i++){let s=0;const r=j*HM;for(let y=0;y<HM;y++){const w=wy[r+y];if(w)s+=w*t[y*N+i]}o[j*N+i]=s}
+  for(let y=0;y<HM;y++){const gr=y*HN;for(let i=0;i<N;i++){const {a,w}=sx[i];let s=0;for(let k=0;k<w.length;k++)s+=w[k]*g[gr+a+k];t[y*N+i]=s}}
+  for(let j=0;j<N;j++){const {a,w}=sy[j];for(let i=0;i<N;i++){let s=0;for(let k=0;k<w.length;k++)s+=w[k]*t[(a+k)*N+i];o[j*N+i]=s}}
   return o;
 }
 function phash(a){
@@ -539,127 +357,279 @@ function phash(a){
   for(let i=0;i<32;i++){if(low[i]>med)w0|=1<<i;if(low[32+i]>med)w1|=1<<i}
   return[w0>>>0,w1>>>0];
 }
+// mean filter of radius r with clamped edges, applied `times` times (same as box_blur in build_index.py)
+function boxBlur(a,W,H,r,times){
+  let src=Float64Array.from(a);const tmp=new Float64Array(W*H),n=2*r+1;
+  for(let t=0;t<times;t++){
+    for(let x=0;x<W;x++){let s=0;for(let k=-r;k<=r;k++)s+=src[Math.min(H-1,Math.max(0,k))*W+x];
+      for(let y=0;y<H;y++){tmp[y*W+x]=s/n;s+=src[Math.min(H-1,y+r+1)*W+x]-src[Math.max(0,y-r)*W+x]}}
+    for(let y=0;y<H;y++){const row=y*W;let s=0;for(let k=-r;k<=r;k++)s+=tmp[row+Math.min(W-1,Math.max(0,k))];
+      for(let x=0;x<W;x++){src[row+x]=s/n;s+=tmp[row+Math.min(W-1,x+r+1)]-tmp[row+Math.max(0,x-r)]}}
+  }
+  return src;
+}
 const hcv=document.createElement("canvas");hcv.width=HN;hcv.height=HM;const hctx=hcv.getContext("2d",{willReadFrequently:true});
 function grayOf(src,r){
   hctx.imageSmoothingEnabled=true;hctx.imageSmoothingQuality="high";hctx.clearRect(0,0,HN,HM);hctx.drawImage(src,r.x,r.y,r.w,r.h,0,0,HN,HM);
   const d=hctx.getImageData(0,0,HN,HM).data,g=new Float64Array(HN*HM);for(let i=0;i<g.length;i++)g[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];return g;
 }
-function cardHash(src,r){const g=grayOf(src,r);return[...phash(boxResize(g,RW.full)),...phash(boxResize(g,RW.art))]}
-// find the card inside its pocket: the 63:88 rectangle with the strongest edges along its outline
-function locateCard(cv){
-  const W=170,H=Math.round(cv.height*W/cv.width),c=document.createElement("canvas");c.width=W;c.height=H;
-  const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(cv,0,0,W,H);
-  const d=x.getImageData(0,0,W,H).data,g=new Float32Array(W*H);for(let i=0;i<W*H;i++)g[i]=.299*d[i*4]+.587*d[i*4+1]+.114*d[i*4+2];
-  const gx=new Float32Array(W*H),gy=new Float32Array(W*H);
-  for(let y=0;y<H;y++)for(let i=1;i<W-1;i++)gx[y*W+i]=Math.abs(g[y*W+i+1]-g[y*W+i-1]);
-  for(let y=1;y<H-1;y++)for(let i=0;i<W;i++)gy[y*W+i]=Math.abs(g[(y+1)*W+i]-g[(y-1)*W+i]);
-  const Cx=new Float64Array((H+1)*W),Ry=new Float64Array(H*(W+1));
-  for(let y=0;y<H;y++)for(let i=0;i<W;i++){const k=y*W+i;
-    Cx[(y+1)*W+i]=Cx[y*W+i]+Math.max(gx[k],i>0?gx[k-1]:0,i<W-1?gx[k+1]:0);
-    Ry[y*(W+1)+i+1]=Ry[y*(W+1)+i]+Math.max(gy[k],y>0?gy[k-W]:0,y<H-1?gy[k+W]:0)}
-  // score = edge strength along the weakest side and on average, slightly favouring larger outlines
-  const cand=[];let floor=-1;
-  for(let w=Math.round(W*.5);w<=W;w++){const h=Math.round(w*88/63);if(h>H)break;const bonus=1+.25*w/W;
-    for(let x0=0;x0<=W-w;x0++){const xr=x0+w-1;for(let y0=0;y0<=H-h;y0++){const yb=y0+h-1;
-      const l=(Cx[(y0+h)*W+x0]-Cx[y0*W+x0])/h,r=(Cx[(y0+h)*W+xr]-Cx[y0*W+xr])/h,t=(Ry[y0*(W+1)+x0+w]-Ry[y0*(W+1)+x0])/w,b=(Ry[yb*(W+1)+x0+w]-Ry[yb*(W+1)+x0])/w;
-      const sc=(.5*Math.min(l,r,t,b)+.5*(l+r+t+b)/4)*bonus;
-      if(sc>floor||cand.length<60){cand.push({sc,x:x0,y:y0,w,h});if(cand.length>120){cand.sort((p,q)=>q.sc-p.sc);cand.length=60;floor=cand[59].sc}}}}}
-  cand.sort((p,q)=>q.sc-p.sc);
-  const iou=(a,b)=>{const ix=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),iy=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return ix*iy/(a.w*a.h+b.w*b.h-ix*iy)};
-  const picks=[];for(const c of cand){if(picks.every(p=>iou(p,c)<.8))picks.push(c);if(picks.length===3)break}
-  const k=cv.width/W;return picks.map(p=>({x:p.x*k,y:p.y*k,w:p.w*k,h:p.h*k}));
+function hashGrayV1(g){return[...phash(boxResize(g,RW.full)),...phash(boxResize(g,RW.art))]}
+function hashGrayV2(g){
+  const bl=boxBlur(g,HN,HM,11,3),hp=new Float64Array(HN*HM),g0=new Float64Array(HN*HM);
+  for(let i=0;i<hp.length;i++)hp[i]=g[i]-bl[i];
+  for(let y=0;y<HM;y++)for(let x=0;x<HN;x++){const gx=g[y*HN+Math.min(HN-1,x+1)]-g[y*HN+Math.max(0,x-1)],gy=g[Math.min(HM-1,y+1)*HN+x]-g[Math.max(0,y-1)*HN+x];g0[y*HN+x]=Math.sqrt(gx*gx+gy*gy)}
+  const gr=boxBlur(g0,HN,HM,1,2);
+  return[...phash(boxResize(hp,RW.full)),...phash(boxResize(hp,RW.art)),...phash(boxResize(gr,RW.full)),...phash(boxResize(gr,RW.art))];
 }
-function cardRects(cv){
-  const W=cv.width,H=cv.height,out=[{x:0,y:0,w:W,h:H}];
-  const add=(x,y,w,h)=>{w=Math.min(w,W);h=Math.min(h,H);out.push({x:Math.max(0,Math.min(W-w,x)),y:Math.max(0,Math.min(H-h,y)),w,h})};
-  for(const r of locateCard(cv)){const cx=r.x+r.w/2,cy=r.y+r.h/2;
-    for(const[dx,dy]of[[0,0],[-.02,0],[.02,0],[0,-.02],[0,.02]])add(cx-r.w/2+dx*r.w,cy-r.h/2+dy*r.h,r.w,r.h);
-    for(const sc of[.96,1.04])add(cx-r.w*sc/2,cy-r.h*sc/2,r.w*sc,r.h*sc)}
-  return out;
+const hashGray=g=>IDX&&IDX.v>=2?hashGrayV2(g):hashGrayV1(g);
+const cardHashV1=(src,r)=>hashGrayV1(grayOf(src,r)),cardHashV2=(src,r)=>hashGrayV2(grayOf(src,r)),cardHash=(src,r)=>hashGray(grayOf(src,r));
+// sample a (perspective) quad straight into a HN×HM gray array, bilinear, no canvas round-trip
+function grayWarp(sd,sw,sh,quad){
+  const map=homography(quad),g=new Float64Array(HN*HM);
+  for(let y=0;y<HM;y++){const v=(y+.5)/HM;for(let x=0;x<HN;x++){
+    let [fx,fy]=map((x+.5)/HN,v);fx-=.5;fy-=.5;const x0=Math.floor(fx),y0=Math.floor(fy);
+    if(x0<0||y0<0||x0>=sw-1||y0>=sh-1) continue;
+    const ax=fx-x0,ay=fy-y0,i00=(y0*sw+x0)*4,i10=i00+4,i01=i00+sw*4,i11=i01+4,w00=(1-ax)*(1-ay),w10=ax*(1-ay),w01=(1-ax)*ay,w11=ax*ay;
+    g[y*HN+x]=.299*(sd[i00]*w00+sd[i10]*w10+sd[i01]*w01+sd[i11]*w11)+.587*(sd[i00+1]*w00+sd[i10+1]*w10+sd[i01+1]*w01+sd[i11+1]*w11)+.114*(sd[i00+2]*w00+sd[i10+2]*w10+sd[i01+2]*w01+sd[i11+2]*w11);
+  }}
+  return g;
 }
-async function vecUrl(url){if(artCache.has(url))return artCache.get(url);const img=await loadImg(url);const v=vecOf(img,0,0,img.naturalWidth,img.naturalHeight);artCache.set(url,v);return v}
-const matchPct=d=>Math.round(100*Math.max(0,Math.min(1,(64-d)/40)));
+const matchPct=d=>Math.round(100*Math.max(0,Math.min(1,(TH.pctZero-d)/(TH.pctZero-TH.pctTop))));
 // regular set printings first: promos and stamped/variant numbers (e.g. 21s, 17p, 745z) only win when they match clearly better
 const isPromo=c=>c.set_type==="promo"||c.promo===true||/[^\d]/.test(c.collector_number||"")||(/^p[a-z0-9]{3}$/.test(c.set||"")&&c.set_type!=="core"&&c.set_type!=="expansion");
-async function rerank(p,raw){
-  const cands=p.top.map(t=>({c:raw.get(t.id),d:t.d})).filter(x=>x.c).sort((x,y)=>x.d-y.d);
-  if(!cands.length||cands[0].d>NONE_D) return{status:"none",card:null,ocr:"No match (empty pocket?)"};
-  const dmin=cands[0].d, lead=cands[0].c;
-  // printings of the same card that match about as well as the best one
-  const same=cands.filter(x=>x.d<=dmin+4&&x.c.oracle_id===lead.oracle_id);
+function rerank(top,raw){
+  const cands=top.map(t=>({c:raw.get(t.id),d:t.d})).filter(x=>x.c).sort((x,y)=>x.d-y.d);
+  if(!cands.length||cands[0].d>TH.none) return{status:"none",card:null,ocr:"No match"};
+  const dmin=cands[0].d,lead=cands[0].c,near=IDX.v>=2?8:4,tie=IDX.v>=2?4:2,gap=IDX.v>=2?6:3;
+  const same=cands.filter(x=>x.d<=dmin+near&&x.c.oracle_id===lead.oracle_id);
   const sameArt=same.filter(x=>!lead.illustration_id||x.c.illustration_id===lead.illustration_id);
-  const pick=(sameArt.find(x=>!isPromo(x.c)&&x.d<=dmin+2)||sameArt[0]).c;
+  const pick=(sameArt.find(x=>!isPromo(x.c)&&x.d<=dmin+tie)||sameArt[0]).c;
   const rival=cands.find(x=>x.c.oracle_id!==lead.oracle_id);
   let status="matched";
-  if(dmin>WEAK_D||(rival&&rival.d-dmin<3)) status="weak";
+  if(dmin>TH.weak||(rival&&rival.d-dmin<gap)) status="weak";
   else if(same.length>1) status="guess";
   return{status,card:slim(pick),ocr:`Artwork match ${matchPct(dmin)}%`};
 }
-async function matchCells(cells){
-  setProgress(.02,"Loading card database…");
-  let idx=null;try{idx=await loadIndex()}catch{}
-  if(!idx){toast("Card database not found yet. Using text reading instead (see Settings).");return false}
-  const per=[];
-  for(let i=0;i<cells.length;i++){
-    setProgress(.05+.35*i/cells.length,`Comparing card ${i+1} of ${cells.length}…`);
-    await new Promise(r=>setTimeout(r,0));
-    const cv=cells[i].cv,rects=cardRects(cv);
-    per.push({cv,rects,top:searchIndex(rects.map(r=>cardHash(cv,r)),TOPK)});
+
+/* ===================== card detection (no grid) ===================== */
+// 1) straighten the photo by its dominant edge angle, 2) score every card-shaped (≈63:88) rectangle by how strong its
+// four edges are, 3) confirm candidates with the artwork fingerprint (which also fixes their size), 4) on binder pages,
+// predict missing cards from the grid the confirmed ones form, 5) keep non-overlapping winners in reading order.
+const DET_LONG=480;
+function rgbEdges(cv,W,H){
+  const c=document.createElement("canvas");c.width=W;c.height=H;const x=c.getContext("2d",{willReadFrequently:true});
+  x.imageSmoothingQuality="high";x.drawImage(cv,0,0,W,H);const d=x.getImageData(0,0,W,H).data;
+  const GX=new Float32Array(W*H),GY=new Float32Array(W*H);
+  for(let y=1;y<H-1;y++)for(let i=1;i<W-1;i++){let bx=0,by=0,bm=-1;const k=y*W+i;
+    for(let ch=0;ch<3;ch++){const p=j=>d[j*4+ch];
+      const gx=(p(k-W+1)+2*p(k+1)+p(k+W+1))-(p(k-W-1)+2*p(k-1)+p(k+W-1));
+      const gy=(p(k+W-1)+2*p(k+W)+p(k+W+1))-(p(k-W-1)+2*p(k-W)+p(k-W+1));
+      const m=gx*gx+gy*gy;if(m>bm){bm=m;bx=gx;by=gy}}
+    GX[k]=bx;GY[k]=by}
+  return{GX,GY};
+}
+function dominantAngle(GX,GY){
+  const bins=new Float64Array(81),mags=[];
+  for(let i=0;i<GX.length;i+=7)mags.push(Math.hypot(GX[i],GY[i]));mags.sort((a,b)=>a-b);const thr=mags[Math.floor(mags.length*.9)]||1;
+  for(let i=0;i<GX.length;i++){const m=Math.hypot(GX[i],GY[i]);if(m<thr)continue;
+    let a=Math.atan2(GY[i],GX[i])*180/Math.PI;a=((a%90)+90)%90;if(a>45)a-=90;if(a<-20||a>20)continue;bins[Math.round((a+20)*2)]+=m}
+  // strongest ±1.5° range wins: a narrow spike at exactly 0° (JPEG blocks, image borders) shouldn't beat the cards' real tilt
+  let best=40,bv=-1;for(let k=0;k<81;k++){let v=0;for(let j=-3;j<=3;j++)v+=(bins[k+j]||0)*(4-Math.abs(j));if(v>bv){bv=v;best=k}}
+  let sw=0,sa=0;for(let j=-3;j<=3;j++){const v=bins[best+j]||0;sw+=v;sa+=v*(best+j)}
+  return sw?Math.round((sa/sw/2-20)*4)/4:0;
+}
+const iouR=(a,b)=>{const ix=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),iy=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y)),i=ix*iy;return i/(a.w*a.h+b.w*b.h-i)};
+const ovlR=(a,b)=>{const ix=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),iy=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return ix*iy/Math.min(a.w*a.h,b.w*b.h)};
+const median=a=>{const s=[...a].sort((p,q)=>p-q);return s.length?s[s.length>>1]:0};
+function rectCandidates(GX,GY,W,H){
+  // directional edge strength; square root lifts weak edges (black border on a dark pocket) against strong inner frames
+  const N=W*H,V0=new Float32Array(N),H0=new Float32Array(N),sample=[];
+  for(let i=0;i<N;i++){V0[i]=Math.abs(GX[i]);H0[i]=Math.abs(GY[i]);if(i%5===0)sample.push(Math.max(V0[i],H0[i]))}
+  sample.sort((a,b)=>a-b);const p=sample[Math.floor(sample.length*.97)]||1;
+  const V=new Float32Array(N),Hh=new Float32Array(N);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){const k=y*W+x;
+    V[k]=Math.min(1,Math.sqrt(Math.max(V0[k],x>0?V0[k-1]:0,x<W-1?V0[k+1]:0)/p));
+    Hh[k]=Math.min(1,Math.sqrt(Math.max(H0[k],y>0?H0[k-W]:0,y<H-1?H0[k+W]:0)/p))}
+  const CV=new Float64Array((H+1)*W),RH=new Float64Array(H*(W+1));
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){CV[(y+1)*W+x]=CV[y*W+x]+V[y*W+x];RH[y*(W+1)+x+1]=RH[y*(W+1)+x]+Hh[y*W+x]}
+  const col=(x,y0,y1)=>{y0=Math.max(0,y0);y1=Math.min(H,y1);return y1>y0?(CV[y1*W+x]-CV[y0*W+x])/(y1-y0):0};
+  const row=(y,x0,x1)=>{x0=Math.max(0,x0);x1=Math.min(W,x1);return x1>x0?(RH[y*(W+1)+x1]-RH[y*(W+1)+x0])/(x1-x0):0};
+  let cands=[],floor=-1;
+  for(let w=Math.round(Math.min(W,H)*.14);w<=W-2;w=Math.max(w+1,Math.round(w*1.035))){
+    const st=Math.max(1,Math.round(w/55));
+    for(const ar of[1.36,1.40,1.44]){const h=Math.round(w*ar);if(h>H-2)continue;const e=Math.max(2,Math.round(h*.05)),ew=Math.max(2,Math.round(w*.05));
+      for(let y=1;y+h<H;y+=st)for(let x=1;x+w<W;x+=st){
+        // most rectangles fail on their first side, so check one side at a time
+        const l=col(x,y,y+h);if(l<.2)continue;const r=col(x+w-1,y,y+h);if(r<.2)continue;
+        const t=row(y,x,x+w);if(t<.2)continue;const b=row(y+h-1,x,x+w);if(b<.2)continue;
+        const mn=Math.min(l,r,t,b);
+        // a card edge stops at the corner; a line that runs on (pocket seam, table edge) is penalised
+        const ext=(col(x,y-e,y)+col(x,y+h,y+h+e)+col(x+w-1,y-e,y)+col(x+w-1,y+h,y+h+e)+row(y,x-ew,x)+row(y,x+w,x+w+ew)+row(y+h-1,x-ew,x)+row(y+h-1,x+w,x+w+ew))/8;
+        const sc=.5*mn+.5*(l+r+t+b)/4-.35*ext;
+        if(sc>floor){cands.push({sc,x,y,w,h});if(cands.length>3000){cands.sort((a,b)=>b.sc-a.sc);cands.length=1500;floor=cands[1499].sc}}
+      }}
   }
-  setProgress(.42,"Fetching card details…");
-  const ids=[...new Set(per.flatMap(p=>p.top.map(t=>t.id)))],raw=new Map();
-  try{for(let i=0;i<ids.length;i+=75){const r=await sf("/cards/collection",{body:{identifiers:ids.slice(i,i+75).map(id=>({id}))}});for(const c of r?.data||[])raw.set(c.id,c)}}
-  catch(e){toast("Couldn't reach Scryfall: "+e.message);return false}
-  for(let i=0;i<per.length;i++){
-    setProgress(.45+.55*i/per.length,`Checking versions ${i+1} of ${per.length}…`);
-    const it=S.review[i],res=await rerank(per[i],raw);
-    it.status=res.status;it.card=res.card;it.ocr=res.ocr;
-    if(!it.card||res.status==="weak") it.include=false;
-    if(it.card&&!it.card.finishes.includes("nonfoil")) it.foil=true;
-    renderReview();
+  cands.sort((a,b)=>b.sc-a.sc);
+  const out=[];for(const c of cands){if(out.every(o=>iouR(o,c)<.5))out.push(c);if(out.length>=48)break}
+  return out;
+}
+// image pyramid so each card is fingerprinted from a copy where it is ~1.5–3x the hash size (sharp, no aliasing)
+function makePyramid(photo){
+  const lv=[];let cv=photo,s=1;
+  for(;;){lv.push({cv,s,w:cv.width,h:cv.height,data:cv.getContext("2d",{willReadFrequently:true}).getImageData(0,0,cv.width,cv.height).data});
+    if(Math.max(cv.width,cv.height)<500)break;
+    const n=document.createElement("canvas");n.width=Math.round(cv.width/2);n.height=Math.round(cv.height/2);const x=n.getContext("2d",{willReadFrequently:true});
+    x.imageSmoothingQuality="high";x.drawImage(cv,0,0,n.width,n.height);cv=n;s/=2}
+  return lv;
+}
+const qW=q=>Math.hypot(q[1][0]-q[0][0],q[1][1]-q[0][1]);
+function hashQuad(pyr,quad){
+  const w=qW(quad);let L=pyr[0];for(const l of pyr)if(w*l.s>=190)L=l;
+  return hashGray(grayWarp(L.data,L.w,L.h,quad.map(([x,y])=>[x*L.s,y*L.s])));
+}
+function variantQuad(q,s,dx,dy){
+  const cx=(q[0][0]+q[1][0]+q[2][0]+q[3][0])/4,cy=(q[0][1]+q[1][1]+q[2][1]+q[3][1])/4;
+  const ux=(q[1][0]-q[0][0]+q[2][0]-q[3][0])/2,uy=(q[1][1]-q[0][1]+q[2][1]-q[3][1])/2,vx=(q[3][0]-q[0][0]+q[2][0]-q[1][0])/2,vy=(q[3][1]-q[0][1]+q[2][1]-q[1][1])/2;
+  return q.map(([x,y])=>[cx+(x-cx)*s+dx*ux+dy*vx,cy+(y-cy)*s+dx*uy+dy*vy]);
+}
+// best fingerprint distance over a set of variants of a quad; returns the distance and the winning quad
+function fpBest(pyr,quad,variants){
+  const qs=variants.map(v=>{const q=variantQuad(quad,...v);return{q,h:hashQuad(pyr,q)}});
+  // anything worse than "no match" is irrelevant, so stop counting bits once a card passes that cap
+  // only the overall best matters, so one running best across all variants lets most cards be dropped after a word or two
+  const H=IDX.H,n=IDX.n,W=IDX.words,hs=qs.map(q=>q.h),Q=hs.length;let m=TH.none+12,bj=0;
+  for(let i=0;i<n;i++){const b=i*W;for(let j=0;j<Q;j++){const h=hs[j];let d=0;for(let k=0;k<W&&d<m;k++)d+=POP(H[b+k]^h[k]);if(d<m){m=d;bj=j}}}
+  return{d:m,quad:qs[bj].q};
+}
+const V_DETECT=[[1,0,0],[1.06,0,0],[1.12,0,0],[1.18,0,0]];
+const V_GRID=(()=>{const v=[];for(const s of[.97,1.04,1.11])for(const dx of[-.06,0,.06])for(const dy of[-.05,0,.05])v.push([s,dx,dy]);return v})();
+const V_POS=(()=>{const v=[];for(const dx of[-.06,0,.06])for(const dy of[-.05,0,.05])v.push([1.04,dx,dy]);return v})();
+const V_SIZE=[[.94,0,0],[1.07,0,0],[1.12,0,0],[1,-.03,0],[1,.03,0],[1,0,-.03],[1,0,.03]];
+// closer look, coarse to fine: find the position first (9 tries), then fine-tune size and position around it (6 more)
+function fpRefine(pyr,quad){const a=fpBest(pyr,quad,V_POS),b=fpBest(pyr,a.quad,V_SIZE);return b.d<a.d?b:a}
+const V_FINE=[[1,0,0],[.96,0,0],[1.04,0,0],[1,-.02,0],[1,.02,0],[1,0,-.02],[1,0,.02]];
+async function detectCards(photo,onStep){
+  const sc0=DET_LONG/Math.max(photo.width,photo.height),W=Math.round(photo.width*sc0),H=Math.round(photo.height*sc0);
+  let e=rgbEdges(photo,W,H);const ang=dominantAngle(e.GX,e.GY);
+  if(Math.abs(ang)>.6){const r=document.createElement("canvas");r.width=photo.width;r.height=photo.height;const x=r.getContext("2d");
+    x.fillStyle="#000";x.fillRect(0,0,r.width,r.height);x.translate(r.width/2,r.height/2);x.rotate(-ang*Math.PI/180);x.drawImage(photo,-photo.width/2,-photo.height/2);e=rgbEdges(r,W,H)}
+  onStep?.("Looking for cards…");await new Promise(r=>setTimeout(r,0));
+  const rects=rectCandidates(e.GX,e.GY,W,H);
+  // straightened working coords <-> original photo coords
+  const a=ang*Math.PI/180,cx=photo.width/2,cy=photo.height/2,co=Math.cos(a),si=Math.sin(a);
+  const toPhoto=([x,y])=>{x=x/sc0-cx;y=y/sc0-cy;return[cx+x*co-y*si,cy+x*si+y*co]};
+  const toWork=([x,y])=>{x-=cx;y-=cy;return[(cx+x*co+y*si)*sc0,(cy-x*si+y*co)*sc0]};
+  const rectOf=q=>{const p=q.map(toWork),xs=p.map(v=>v[0]),ys=p.map(v=>v[1]);const x=Math.min(...xs),y=Math.min(...ys);return{x,y,w:Math.max(...xs)-x,h:Math.max(...ys)-y}};
+  const quadOf=r=>[[r.x,r.y],[r.x+r.w,r.y],[r.x+r.w,r.y+r.h],[r.x,r.y+r.h]].map(toPhoto);
+  for(const r of rects){r.quad=r.quad0=quadOf(r);r.d=999}
+  if(!IDX) return order(rects.filter((r,i)=>i<12&&r.sc>rects[0].sc*.8).map(r=>({...r,sure:false})));
+  const pyr=makePyramid(photo);
+  onStep?.("Checking which outlines are cards…");
+  for(let i=0;i<rects.length;i++){if(i%8===0)await new Promise(z=>setTimeout(z,0));
+    const f=fpBest(pyr,rects[i].quad,V_DETECT);rects[i].d=f.d;rects[i].quad=f.quad;Object.assign(rects[i],rectOf(f.quad))}
+  const keep=[];
+  for(const r of [...rects].sort((p,q)=>p.d-q.d||q.sc-p.sc)){if(r.d>TH.acc)break;if(keep.every(k=>ovlR(k,r)<.35))keep.push({...r,sure:true})}
+  // strong outlines that the quick check didn't confirm get a closer look (more offsets and sizes)
+  {const ref=keep.length?median(keep.map(k=>k.sc)):rects[0]?.sc||0,mw0=keep.length?median(keep.map(k=>k.w)):0;let tries=0;
+   for(const r of [...rects].sort((p,q)=>q.sc-p.sc)){if(tries>=4||r.sc<ref*.6)break;if(r.d<=TH.acc||!keep.every(k=>ovlR(k,r)<.35))continue;
+     if(mw0&&Math.abs(r.w/mw0-1)>.3)continue;tries++;await new Promise(z=>setTimeout(z,0));
+     const f=fpRefine(pyr,r.quad0),fr=rectOf(f.quad);if(f.d<=TH.grid&&keep.every(k=>ovlR(k,fr)<.35))keep.push({...fr,sc:r.sc,quad:f.quad,d:f.d,sure:true})}}
+  // binder pages: cards sit on a regular grid, so check every grid spot the confirmed cards imply
+  if(keep.length>=2){
+    onStep?.("Checking the rest of the page…");
+    const mw=median(keep.map(k=>k.w)),mh=median(keep.map(k=>k.h));
+    const axis=(vals,size,lim)=>{const c=[];for(const v of[...vals].sort((p,q)=>p-q)){const last=c[c.length-1];if(last&&v-last.v/last.n<size*.5){last.v+=v;last.n++}else c.push({v,n:1})}
+      let pos=c.map(k=>k.v/k.n);const gaps=[];for(let i=1;i<pos.length;i++)gaps.push(pos[i]-pos[i-1]);
+      const step=gaps.filter(g=>g<size*1.6).length?median(gaps.filter(g=>g<size*1.6)):size*1.08,out=[];
+      for(let i=0;i<pos.length;i++){out.push({v:pos[i],inside:true});if(i+1<pos.length){const k=Math.round((pos[i+1]-pos[i])/step);for(let j=1;j<k;j++)out.push({v:pos[i]+(pos[i+1]-pos[i])*j/k,inside:true})}}
+      for(let v=out[0].v-step;v-size*.45>0;v-=step)out.unshift({v,inside:false});
+      for(let v=out[out.length-1].v+step;v+size*.45<lim;v+=step)out.push({v,inside:false});
+      return out};
+    const xs=axis(keep.map(k=>k.x+k.w/2),mw,W),ys=axis(keep.map(k=>k.y+k.h/2),mh,H);
+    if(xs.length*ys.length<=30) for(const gy of ys)for(const gx of xs){
+      const r={x:gx.v-mw/2,y:gy.v-mh/2,w:mw,h:mh};if(!keep.every(k=>ovlR(k,r)<.35))continue;
+      await new Promise(z=>setTimeout(z,0));
+      const f=fpRefine(pyr,quadOf(r)),fr=rectOf(f.quad);
+      if(f.d<=TH.grid&&keep.every(k=>ovlR(k,fr)<.35)){keep.push({...fr,quad:f.quad,d:f.d,sure:true});continue}
+      // unconfirmed spot inside the page (glare, foil, empty pocket): offer it as an unsure outline
+      const edgeHit=rects.find(c=>iouR(c,r)>.45&&c.sc>=Math.min(...keep.map(k=>k.sc??1))*.6);
+      if(gx.inside&&gy.inside||edgeHit) keep.push({...(edgeHit||r),quad:edgeHit?edgeHit.quad:quadOf(r),d:f.d,sure:false});
+    }
   }
-  setProgress(1);return true;
+  return order(keep);
+}
+function order(keep){
+  keep.sort((p,q)=>p.y-q.y);const rows=[];
+  for(const k of keep){const rw=rows.find(R=>Math.abs(R[0].y+R[0].h/2-(k.y+k.h/2))<R[0].h*.5);rw?rw.push(k):rows.push([k])}
+  return rows.flatMap(R=>R.sort((p,q)=>p.x-q.x)).map(k=>({quad:k.quad,sure:!!k.sure,d:k.d??999}));
 }
 
 /* ===================== scan flow ===================== */
-function layout(){return LAYOUTS.find(l=>l.id===S.settings.layout)||LAYOUTS[2]}
-function defaultCorners(c){const mx=c.width*.03,my=c.height*.03;return[[mx,my],[c.width-mx,my],[c.width-mx,c.height-my],[mx,c.height-my]]}
+function cropCard(pyr,quad,w){let L=pyr[0];for(const l of pyr)if(qW(quad)*l.s>=w)L=l;return warpQuad(L.data,L.w,L.h,quad.map(([x,y])=>[x*L.s,y*L.s]),w,Math.round(w*88/63))}
 async function onPhoto(file){
   if(!file) return;
-  try{const c=await fileToCanvas(file);S.scan={img:c,corners:defaultCorners(c)};S.review=null;render()}
-  catch(e){toast(e.message)}
+  let img;try{img=await fileToCanvas(file)}catch(e){toast(e.message);return}
+  S.review=null;await findCards(img);
+}
+async function findCards(img){
+  S.scan={img,cards:null,detecting:true,step:"Loading card database…",adding:false};render();
+  try{
+    await loadIndex();
+    S.scan.pyr=makePyramid(img);
+    const cards=await detectCards(img,msg=>{S.scan.step=msg;const el=$("#ol-step");if(el)el.textContent=msg});
+    S.scan.cards=cards.map(c=>({...c,on:true}));
+  }catch(e){S.scan.cards=[];toast("Couldn't look for cards: "+e.message)}
+  S.scan.detecting=false;
+  if(!S.scan.cards.length){S.scan.adding=true;toast("No cards found. Tap Add a card, then tap each card in the photo.")}
+  render();
+}
+// tapped spot in add mode: start with an outline the size of the others, then let the fingerprint snap it onto the card
+async function addCardAt(x,y){
+  const sc=S.scan,others=sc.cards.map(c=>c.quad);
+  const w=others.length?median(others.map(qW)):sc.img.width*.3,h=w*88/63;
+  const card={quad:[[x-w/2,y-h/2],[x+w/2,y-h/2],[x+w/2,y+h/2],[x-w/2,y+h/2]],sure:false,d:1e6,on:true,manual:true};
+  sc.cards.push(card);sc.adding=false;render();
+  if(IDX&&sc.pyr){const f=fpRefine(sc.pyr,card.quad);if(f.d<=TH.grid){card.quad=f.quad;card.d=f.d;card.sure=true;render()}}
 }
 async function runScan(){
-  const {rows,cols}=layout(); const sc=S.scan; if(!sc) return;
-  S.scanning=true;S.progress=0;render();
+  const sc=S.scan,sel=(sc?.cards||[]).filter(c=>c.on);if(!sel.length) return;
+  S.scanning=true;S.progress=0;
+  const pyr=sc.pyr||makePyramid(sc.img);
+  S.review=sel.map((c,i)=>{const cv=cropCard(pyr,c.quad,520);return{key:uid(),n:i+1,thumb:thumb(cv),big:thumb(cv,520),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}});
+  render();
   try{
-    // keep the photo's native detail: cell width follows the source resolution (680–1100 px)
-    const qw=Math.max(Math.hypot(sc.corners[1][0]-sc.corners[0][0],sc.corners[1][1]-sc.corners[0][1]),Math.hypot(sc.corners[2][0]-sc.corners[3][0],sc.corners[2][1]-sc.corners[3][1]));
-    CARD_W=Math.round(Math.max(680,Math.min(1100,qw/cols)));CARD_H=Math.round(CARD_W*88/63);
-    await new Promise(r=>setTimeout(r,30));
-    const cells=warpCells(sc,layout(),CARD_W,CARD_H,S.settings.inset/100);
-    S.review=cells.map(x=>({key:uid(),r:x.r,c:x.c,thumb:thumb(x.cv),big:thumb(x.cv,520),status:"pending",ocr:"",card:null,foil:false,qty:1,include:true}));
-    render();
-    if(S.settings.engine==="image"&&await matchCells(cells)){S.scanning=false;render();return}
-    let claude=null;
     if(S.settings.engine==="claude"&&S.settings.apiKey){
-      setProgress(.15,"Asking Claude to read the page…");
-      try{claude=await identifyClaude(cells)}catch(e){toast(e.message+" Falling back to on-device OCR.")}
-    }
-    for(let i=0;i<cells.length;i++){
-      const it=S.review[i]; let res;
-      try{
-        if(claude){setProgress(i/cells.length,`Matching card ${i+1} of ${cells.length}…`);res=await resolveClaude(claude.find(k=>+k.index===i+1),cells[i].cv)}
-        else{setProgress(i/cells.length,`Reading card ${i+1} of ${cells.length}…`);res=await identifyOcr(cells[i].cv)}
-      }catch(e){res={ocr:"Error: "+e.message,card:null,status:"none"}}
-      it.ocr=res.ocr;it.status=res.status;it.card=res.card?slim(res.card):null;
-      if(res.foil&&it.card?.finishes.includes("foil")) it.foil=true;
-      if(it.card&&!it.card.finishes.includes("nonfoil")) it.foil=true;
-      if(!it.card) it.include=false;
-      setProgress((i+1)/cells.length);renderReview();
-    }
+      setProgress(.15,"Asking Claude to read the cards…");
+      const cells=sel.map(c=>({cv:cropCard(pyr,c.quad,600)}));
+      const res=await identifyClaude(cells);
+      for(let i=0;i<sel.length;i++){const it=S.review[i],r=await resolveClaude(res.find(k=>+k.index===i+1));
+        Object.assign(it,{status:r.status,card:r.card,ocr:r.ocr});if(r.foil&&it.card?.finishes.includes("foil"))it.foil=true;if(!it.card)it.include=false;
+        setProgress((i+1)/sel.length);renderReview()}
+    } else await matchOutlines(sel,pyr);
   }catch(e){toast(e.message)}
   S.scanning=false;render();
+}
+async function matchOutlines(sel,pyr){
+  if(!IDX&&!await loadIndex()){toast("The card database isn't available. Check your connection and try again.");S.review.forEach(it=>{it.status="none";it.ocr="No database"});return}
+  const tops=[];
+  for(let i=0;i<sel.length;i++){
+    setProgress(.05+.45*i/sel.length,`Comparing card ${i+1} of ${sel.length}…`);await new Promise(r=>setTimeout(r,0));
+    let top=searchIndex(V_FINE.map(v=>hashQuad(pyr,variantQuad(sel[i].quad,...v))),TOPK);
+    // unsure result: take a closer look around the outline (it may be slightly off the card) and search again
+    if(!top.length||top[0].d>TH.weak){const f=fpRefine(pyr,sel[i].quad);if(f.d<top[0]?.d){sel[i].quad=f.quad;top=searchIndex(V_FINE.map(v=>hashQuad(pyr,variantQuad(f.quad,...v))),TOPK)}}
+    tops.push(top);
+  }
+  setProgress(.55,"Fetching card details…");
+  const ids=[...new Set(tops.flat().map(t=>t.id))],raw=new Map();
+  try{for(let i=0;i<ids.length;i+=75){const r=await sf("/cards/collection",{body:{identifiers:ids.slice(i,i+75).map(id=>({id}))}});for(const c of r?.data||[])raw.set(c.id,c)}}
+  catch(e){toast("Couldn't reach Scryfall: "+e.message);S.review.forEach(it=>{it.status="none";it.ocr="Scryfall unreachable"});return}
+  for(let i=0;i<sel.length;i++){
+    const it=S.review[i],res=rerank(tops[i],raw);
+    it.status=res.status;it.card=res.card;it.ocr=res.ocr;
+    if(!it.card||res.status==="weak") it.include=false;
+    if(it.card&&!it.card.finishes.includes("nonfoil")) it.foil=true;
+  }
+  setProgress(1);renderReview();
 }
 function setProgress(p,msg){S.progress=p;const b=$("#prog b");if(b)b.style.width=Math.round(p*100)+"%";if(msg&&$("#prog-msg"))$("#prog-msg").textContent=msg}
 function commitReview(){
@@ -722,43 +692,40 @@ function render(){
   if(S.tab==="scan") m.innerHTML=viewScan();
   else if(S.tab==="collection") m.innerHTML=viewCollection();
   else m.innerHTML=viewSettings();
-  if(S.tab==="scan"&&S.scan&&!S.review) mountEditor();
+  if(S.tab==="scan"&&S.scan&&!S.review) mountOutlineEditor();
   if(S.tab==="scan"&&S.review) renderReview();
-  if(S.tab==="settings") fetch("data/meta.json",{cache:"no-store"}).then(r=>r.ok?r.json():null).catch(()=>null).then(m=>{const el=$("#idx-status");if(!el)return;
-    el.textContent=m?`Card database: ${m.count.toLocaleString("de-DE")} printings, updated ${new Date(m.built*1000).toLocaleDateString("de-DE")}.`:"Card database not built yet: in your GitHub repo open Actions → Build card index → Run workflow. The first build takes 30–60 minutes."});
+  if(S.tab==="settings") (async()=>{for(const f of["data/meta2.json","data/meta.json"]){try{const r=await fetch(f,{cache:"no-store"});if(r.ok)return r.json()}catch{}}return null})().then(m=>{const el=$("#idx-status");if(!el)return;
+    el.textContent=m?`Card database: ${m.count.toLocaleString("de-DE")} printings (fingerprint v${m.version||1}), updated ${new Date(m.built*1000).toLocaleDateString("de-DE")}.`:"Card database not built yet: in your GitHub repo open Actions → Build card index → Run workflow. The first build takes 30–60 minutes."});
 }
 function viewScan(){
-  const L=layout();
   if(S.review){
     return `<section class="view">
       <div class="panel" ${S.scanning?"":"hidden"}><div class="row" style="justify-content:space-between"><span class="label">Scanning</span><span class="mono muted" id="prog-msg">Preparing…</span></div><div class="progress" id="prog"><b style="width:${Math.round(S.progress*100)}%"></b></div></div>
       <div class="row" style="justify-content:space-between"><h2>Review ${S.review.length} card${S.review.length>1?"s":""}</h2><span class="muted mono" id="rv-sum"></span></div>
-      <p class="hint">Check each card before it's saved. Tap <b>Foil</b> to switch finish, <b>Version</b> to pick the exact printing, or <b>Search</b> if it was misread.</p>
+      <p class="hint">Check each card before it's saved. Tap <b>Foil</b> to switch finish, <b>Version</b> to pick the exact printing, or <b>Search</b> if it's the wrong card.</p>
       <div class="review" id="review"></div>
-      <div class="sticky-actions"><button class="btn ghost" id="rv-cancel">Discard</button><button class="btn primary wide" id="rv-add" ${S.scanning?"disabled":""}>Add to ${esc(S.settings.binder||"collection")}</button></div>
+      <div class="sticky-actions"><button class="btn ghost" id="rv-back">Back to photo</button><button class="btn primary wide" id="rv-add" ${S.scanning?"disabled":""}>Add to ${esc(S.settings.binder||"collection")}</button></div>
     </section>`;
   }
   if(S.scan){
+    const sc=S.scan,cards=sc.cards||[],on=cards.filter(c=>c.on).length,unsure=cards.filter(c=>c.on&&!c.sure).length;
     return `<section class="view">
-      <div class="row" style="justify-content:space-between"><h2>Fit the grid</h2><span class="mono muted">${L.label} · ${L.rows}×${L.cols}</span></div>
-      <p class="hint">Drag the big corner points onto the outer edges of the pockets. If the page bulges, drag the small points where the lines cross until every box holds one card.</p>
-      <div class="editor" id="editor"><canvas id="ed-cv"></canvas></div>
-      <div class="layouts" id="layouts">${LAYOUTS.map(l=>`<button data-l="${l.id}" aria-pressed="${l.id===L.id}">${pocketsIcon(l.rows,l.cols)}${l.label}</button>`).join("")}</div>
-      <div class="row"><button class="btn" id="ed-preview">Preview cuts</button><button class="btn" id="ed-straight">Straighten lines</button><button class="btn" id="ed-rot">Rotate</button><button class="btn" id="ed-reset">Reset</button><button class="btn ghost" id="ed-retake">Retake</button></div>
-      <button class="btn primary" id="ed-scan">Scan ${L.rows*L.cols} card${L.rows*L.cols>1?"s":""}</button>
-      <p class="hint mono">Recognition: ${{image:"artwork match",ocr:"text reading",claude:"Claude vision"}[S.settings.engine]||"artwork match"} · saving to ${esc(S.settings.binder)}</p>
+      <div class="row" style="justify-content:space-between"><h2>${sc.detecting?"Finding cards…":`${cards.length} card${cards.length===1?"":"s"} found`}</h2><span class="mono muted" id="ol-step">${sc.detecting?esc(sc.step):""}</span></div>
+      <p class="hint">${sc.detecting?"This takes a few seconds.":sc.adding?"Tap the card you want to add.":`Tap an outline to leave that card out, tap again to bring it back. Drag a corner to fix an outline.${unsure?" Dashed outlines weren't recognised for sure.":""}`}</p>
+      <div class="editor" id="editor"><canvas id="ol-cv"></canvas></div>
+      <div class="row"><button class="btn ${sc.adding?"primary":""}" id="ol-add" ${sc.detecting?"disabled":""}>${sc.adding?"Cancel adding":"Add a card"}</button><button class="btn" id="ol-rot" ${sc.detecting?"disabled":""}>Rotate photo</button><button class="btn ghost" id="ol-retake">Retake</button></div>
+      <button class="btn primary" id="ol-scan" ${sc.detecting||!on?"disabled":""}>Scan ${on} card${on===1?"":"s"}</button>
+      ${S.settings.engine==="claude"&&S.settings.apiKey?`<p class="hint mono">Recognition: Claude vision · saving to ${esc(S.settings.binder)}</p>`:""}
     </section>`;
   }
   return `<section class="view">
     <div class="panel">
-      <span class="label">Binder layout</span>
-      <div class="layouts" id="layouts">${LAYOUTS.map(l=>`<button data-l="${l.id}" aria-pressed="${l.id===L.id}">${pocketsIcon(l.rows,l.cols)}${l.label}</button>`).join("")}</div>
       <div class="field"><label class="label" for="binder">Save to binder</label><input type="text" id="binder" value="${esc(S.settings.binder)}" list="binders"><datalist id="binders">${[...new Set(S.coll.map(e=>e.binder))].map(b=>`<option value="${esc(b)}">`).join("")}</datalist></div>
       <button class="btn primary" id="take">Take photo</button>
       <button class="btn" id="pick">Choose from photos</button>
     </div>
     <div class="panel"><span class="label">For a clean scan</span>
-      <p class="muted">Lay the binder flat and shoot from straight above. Tilt slightly to dodge glare on the sleeves. Fill the frame with the page; you'll line up the corners next.</p></div>
+      <p class="muted">Any number of cards works: a whole binder page, a few cards on the table, or one card. Shoot from straight above, keep the cards upright in the photo, and tilt the phone slightly to dodge glare on the sleeves.</p></div>
   </section>`;
 }
 function renderReview(){
@@ -772,7 +739,7 @@ function renderReview(){
         <div class="top"><div style="min-width:0">
           <div class="name">${c?esc(c.name):`<span class="muted">${esc(it.ocr||"Reading…")}</span>`}</div>
           <div class="meta">${c?`${esc(c.set.toUpperCase())} #${esc(c.num)} · <span class="rar-${c.rarity}">${esc(c.rarity)}</span>${c.lang!=="en"?" · "+esc(c.lang.toUpperCase()):""}`:"&nbsp;"}</div>
-        </div><div style="text-align:right"><div class="price">${c?eur(p):""}</div><span class="pos">R${it.r+1}·C${it.c+1}</span></div></div>
+        </div><div style="text-align:right"><div class="price">${c?eur(p):""}</div><span class="pos">#${it.n}</span></div></div>
         <div class="row" style="gap:6px"><span class="status ${it.status}">${{matched:"Matched",guess:"Check version",weak:"Check card",none:"Not found",pending:"Reading"}[it.status]}</span>${c&&c.setName?`<span class="meta" style="font-family:var(--f-ui)">${esc(c.setName)}</span>`:""}</div>
         ${it.ocr&&it.status!=="pending"?`<div class="meta">Read: ${esc(it.ocr)}</div>`:""}
         ${it.status==="pending"?"":`<div class="chips">
@@ -851,69 +818,67 @@ function viewSettings(){
       <div class="field"><label for="s-cid">Cardmarket seller-country ID</label><input type="number" id="s-cid" value="${s.countryId}"><small>If Cardmarket shows another country after tapping the link, correct this number.</small></div>
     </div>
     <div class="panel"><span class="label">Card recognition</span>
-      <div class="field"><label for="s-engine">Engine</label><select id="s-engine"><option value="image" ${s.engine==="image"?"selected":""}>Artwork match (free, recommended)</option><option value="ocr" ${s.engine==="ocr"?"selected":""}>Text reading (older fallback)</option><option value="claude" ${s.engine==="claude"?"selected":""}>Claude vision (needs API key)</option></select>
+      <div class="field"><label for="s-engine">Engine</label><select id="s-engine"><option value="image" ${s.engine==="image"?"selected":""}>Artwork match (free, recommended)</option><option value="claude" ${s.engine==="claude"?"selected":""}>Claude vision (needs API key)</option></select>
       <small id="idx-status">Checking card database…</small></div>
-      <div class="field"><label for="s-langs">OCR languages</label><select id="s-langs"><option value="eng+deu" ${s.ocrLangs==="eng+deu"?"selected":""}>English + German</option><option value="eng" ${s.ocrLangs==="eng"?"selected":""}>English only</option><option value="eng+deu+fra+ita+spa" ${s.ocrLangs.length>8?"selected":""}>EN, DE, FR, IT, ES</option></select><small>German card names are matched through the set code and number printed bottom-left.</small></div>
-      <div class="field"><label for="s-key">Anthropic API key</label><input type="password" id="s-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"><small>Stored on this phone only and sent straight to Anthropic. Leave empty to use OCR.</small></div>
+      <div class="field"><label for="s-key">Anthropic API key</label><input type="password" id="s-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"><small>Only used with Claude vision. Stored on this phone only and sent straight to Anthropic.</small></div>
       <div class="field"><label for="s-model">Claude model</label><input type="text" id="s-model" value="${esc(s.model)}"></div>
-      <div class="field"><label for="s-inset">Pocket margin trim: <span class="mono" id="s-inset-v">${s.inset}%</span></label><input type="range" id="s-inset" min="0" max="12" value="${s.inset}"><small>Raise it if the sleeve edges get read instead of the card.</small></div>
     </div>
     <div class="panel"><span class="label">About prices</span><p class="muted">Prices are Cardmarket trend prices (EUR) supplied by Scryfall, refreshed daily. Cardmarket doesn't offer price access to new apps, so the cheapest offer from your country is one tap away on each card. You can enter it as your own price.</p></div>
   </section>`;
 }
 
-/* ===================== corner editor ===================== */
-function mountEditor(){
-  const cv=$("#ed-cv"), sc=S.scan, img=sc.img;
-  cv.width=img.width;cv.height=img.height;
-  const ctx=cv.getContext("2d"), L=layout(), C=L.cols, R=L.rows;
-  const big=Math.max(img.width,img.height), hr=big*.028, lw=Math.max(2,img.width/400);
-  const cornerIdx=[0,C,R*(C+1)+C,R*(C+1)], cornerOf=i=>cornerIdx.indexOf(i);
-  let drag=-1, dragPt=null;
+/* ===================== outline editor ===================== */
+// The photo with every found card outlined: tap an outline to leave it out / bring it back, drag a corner to fix it,
+// or use "Add a card" and tap a card that was missed.
+function mountOutlineEditor(){
+  const cv=$("#ol-cv"),sc=S.scan,img=sc.img,ds=Math.min(1,1400/Math.max(img.width,img.height));
+  cv.width=Math.round(img.width*ds);cv.height=Math.round(img.height*ds);
+  const ctx=cv.getContext("2d"),W=cv.width,H=cv.height,big=Math.max(W,H),hr=big*.022,lw=Math.max(2,big/450);
+  const P=([x,y])=>[x*ds,y*ds];
+  let drag=null,down=null;
+  const inside=(q,[x,y])=>{let c=false;for(let i=0,j=3;i<4;j=i++){const[xi,yi]=q[i],[xj,yj]=q[j];if((yi>y)!==(yj>y)&&x<(xj-xi)*(y-yi)/(yj-yi)+xi)c=!c}return c};
   function draw(){
-    const pts=meshPoints(sc,L);
-    ctx.drawImage(img,0,0);
-    // dim everything outside the grid
-    const ring=[];for(let c=0;c<=C;c++)ring.push(pts[c]);for(let r=1;r<=R;r++)ring.push(pts[r*(C+1)+C]);for(let c=C-1;c>=0;c--)ring.push(pts[R*(C+1)+c]);for(let r=R-1;r>0;r--)ring.push(pts[r*(C+1)]);
-    ctx.fillStyle="rgba(0,0,0,.45)";ctx.beginPath();ctx.rect(0,0,img.width,img.height);ctx.moveTo(...ring[0]);for(let i=ring.length-1;i>0;i--)ctx.lineTo(...ring[i]);ctx.closePath();ctx.fill("evenodd");
-    ctx.lineWidth=lw;ctx.strokeStyle="#e0ab4a";
-    for(let r=0;r<=R;r++){ctx.beginPath();for(let c=0;c<=C;c++){const p=pts[r*(C+1)+c];c?ctx.lineTo(...p):ctx.moveTo(...p)}ctx.stroke()}
-    for(let c=0;c<=C;c++){ctx.beginPath();for(let r=0;r<=R;r++){const p=pts[r*(C+1)+c];r?ctx.lineTo(...p):ctx.moveTo(...p)}ctx.stroke()}
-    pts.forEach(([x,y],i)=>{const corner=cornerOf(i)>=0;ctx.beginPath();ctx.arc(x,y,corner?hr:hr*.55,0,7);
-      ctx.fillStyle=i===drag?"rgba(224,171,74,.75)":corner?"rgba(224,171,74,.35)":"rgba(255,255,255,.35)";ctx.fill();ctx.lineWidth=lw*1.5;ctx.stroke()});
-    if(dragPt) loupe(dragPt);
+    ctx.drawImage(img,0,0,W,H);
+    if(sc.detecting){ctx.fillStyle="rgba(0,0,0,.35)";ctx.fillRect(0,0,W,H);return}
+    (sc.cards||[]).forEach((c,i)=>{
+      const q=c.quad.map(P);ctx.beginPath();q.forEach((p,j)=>j?ctx.lineTo(...p):ctx.moveTo(...p));ctx.closePath();
+      if(!c.on){ctx.fillStyle="rgba(0,0,0,.55)";ctx.fill()}
+      ctx.setLineDash(c.on&&c.sure?[]:[lw*4,lw*3]);ctx.lineWidth=lw*1.6;ctx.strokeStyle=!c.on?"rgba(255,255,255,.6)":c.sure?"#4cc27e":"#e0ab4a";ctx.stroke();ctx.setLineDash([]);
+      // number badge
+      const [bx,by]=q[0],r=hr*1.1;ctx.beginPath();ctx.arc(bx+r*1.2,by+r*1.2,r,0,7);ctx.fillStyle=!c.on?"#555":c.sure?"#4cc27e":"#e0ab4a";ctx.fill();
+      ctx.fillStyle="#111";ctx.font=`700 ${Math.round(r*1.2)}px system-ui,sans-serif`;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(c.on?String(i+1):"✕",bx+r*1.2,by+r*1.25);
+      if(c.on) q.forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,hr*.55,0,7);ctx.fillStyle="rgba(255,255,255,.85)";ctx.fill();ctx.lineWidth=lw;ctx.strokeStyle="#111";ctx.stroke()});
+    });
+    if(drag) loupe(P(sc.cards[drag.ci].quad[drag.k]));
   }
   // magnifier in the top corner away from your finger, so you can see the edge you're placing
   function loupe([px,py]){
-    const r=big*.13, z=3, cx=px<img.width/2?img.width-r-lw*6:r+lw*6, cy=r+lw*6;
-    ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.clip();
-    ctx.fillStyle="#000";ctx.fillRect(cx-r,cy-r,2*r,2*r);
-    ctx.drawImage(img,px-r/z,py-r/z,2*r/z,2*r/z,cx-r,cy-r,2*r,2*r);
-    // grid lines near the point, magnified
-    const pts=meshPoints(sc,L),tr=([x,y])=>[cx+(x-px)*z,cy+(y-py)*z];ctx.strokeStyle="#e0ab4a";ctx.lineWidth=lw;
-    for(let rr=0;rr<=R;rr++){ctx.beginPath();for(let c=0;c<=C;c++){const q=tr(pts[rr*(C+1)+c]);c?ctx.lineTo(...q):ctx.moveTo(...q)}ctx.stroke()}
-    for(let c=0;c<=C;c++){ctx.beginPath();for(let rr=0;rr<=R;rr++){const q=tr(pts[rr*(C+1)+c]);rr?ctx.lineTo(...q):ctx.moveTo(...q)}ctx.stroke()}
+    const r=big*.13,z=3,cx=px<W/2?W-r-lw*6:r+lw*6,cy=r+lw*6;
+    ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.clip();ctx.fillStyle="#000";ctx.fillRect(cx-r,cy-r,2*r,2*r);
+    ctx.drawImage(img,(px-r/z)/ds,(py-r/z)/ds,2*r/z/ds,2*r/z/ds,cx-r,cy-r,2*r,2*r);
+    const q=sc.cards[drag.ci].quad.map(P).map(([x,y])=>[cx+(x-px)*z,cy+(y-py)*z]);ctx.beginPath();q.forEach((p,j)=>j?ctx.lineTo(...p):ctx.moveTo(...p));ctx.closePath();ctx.strokeStyle="#4cc27e";ctx.lineWidth=lw;ctx.stroke();
     ctx.strokeStyle="#fff";ctx.lineWidth=lw*.8;ctx.beginPath();ctx.moveTo(cx-r*.15,cy);ctx.lineTo(cx+r*.15,cy);ctx.moveTo(cx,cy-r*.15);ctx.lineTo(cx,cy+r*.15);ctx.stroke();
     ctx.restore();ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.strokeStyle="#e0ab4a";ctx.lineWidth=lw*2;ctx.stroke();
   }
   draw();
-  const pos=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*img.width/r.width,(e.clientY-r.top)*img.height/r.height]};
-  cv.onpointerdown=e=>{const [x,y]=pos(e),pts=meshPoints(sc,L);let best=-1,bd=1e9;
-    pts.forEach(([px,py],i)=>{const d=Math.hypot(px-x,py-y)*(cornerOf(i)>=0?.8:1);if(d<bd){bd=d;best=i}});
-    if(bd<hr*2.5){drag=best;dragPt=pts[best];cv.setPointerCapture(e.pointerId);draw()}};
-  cv.onpointermove=e=>{if(drag<0)return;let [x,y]=pos(e);x=Math.max(0,Math.min(img.width,x));y=Math.max(0,Math.min(img.height,y));
-    const k=cornerOf(drag);
-    if(k>=0) sc.corners[k]=[x,y];
-    else{const map=homography(sc.corners),r=Math.floor(drag/(C+1)),c=drag%(C+1),[gx,gy]=map(c/C,r/R);sc.off[drag]=[x-gx,y-gy]}
-    dragPt=[x,y];draw()};
-  cv.onpointerup=cv.onpointercancel=()=>{drag=-1;dragPt=null;draw()};
-}
-function previewCuts(){
-  const L=layout(),W=150,H=Math.round(150*88/63);
-  const cells=warpCells(S.scan,L,W,H,S.settings.inset/100);
-  sheet("Preview cuts",`<p class="hint">Each card should sit fully inside its box. Small margins are fine; the scan finds the card inside each box.</p>
-    <div style="display:grid;grid-template-columns:repeat(${L.cols},1fr);gap:6px" id="pv"></div>`,body=>{
-    const g=$("#pv",body);cells.forEach(c=>{c.cv.style.cssText="width:100%;height:auto;border-radius:4px";g.appendChild(c.cv)})});
+  if(sc.detecting) return;
+  const pos=e=>{const r=cv.getBoundingClientRect();return[(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height]};
+  cv.onpointerdown=e=>{const p=pos(e);down={p,moved:false};
+    let best=null,bd=hr*2;(sc.cards||[]).forEach((c,ci)=>{if(!c.on)return;c.quad.forEach((q,k)=>{const d=Math.hypot(q[0]*ds-p[0],q[1]*ds-p[1]);if(d<bd){bd=d;best={ci,k}}})});
+    if(best&&!sc.adding){drag=best;cv.setPointerCapture(e.pointerId);draw()}};
+  cv.onpointermove=e=>{if(!down)return;const p=pos(e);if(Math.hypot(p[0]-down.p[0],p[1]-down.p[1])>hr*.4)down.moved=true;
+    if(!drag)return;const c=sc.cards[drag.ci];c.quad[drag.k]=[Math.max(0,Math.min(img.width,p[0]/ds)),Math.max(0,Math.min(img.height,p[1]/ds))];c.sure=c.sure&&false;draw()};
+  cv.onpointerup=e=>{const p=pos(e),wasDrag=drag;drag=null;
+    if(down&&!down.moved&&!wasDrag){
+      const pt=[p[0]/ds,p[1]/ds];
+      if(sc.adding){down=null;return addCardAt(...pt)}
+      const hit=(sc.cards||[]).map((c,i)=>({c,i})).filter(({c})=>inside(c.quad,pt)).sort((a,b)=>qW(a.c.quad)-qW(b.c.quad))[0];
+      if(hit){hit.c.on=!hit.c.on;down=null;render();return}
+    }
+    down=null;draw();
+    if(wasDrag) render();
+  };
+  cv.onpointercancel=()=>{drag=null;down=null;draw()};
 }
 
 /* ===================== events ===================== */
@@ -938,14 +903,11 @@ document.addEventListener("click",e=>{
   if(t.dataset.goto){S.tab=t.dataset.goto;render();return}
   if(t.id==="take") return $("#file-cam").click();
   if(t.id==="pick") return $("#file-pick").click();
-  if(t.dataset.l){S.settings.layout=t.dataset.l;saveSet();render();return}
-  if(t.id==="ed-rot"){S.scan.img=rotateCanvas(S.scan.img);S.scan.corners=defaultCorners(S.scan.img);S.scan.off=null;render();return}
-  if(t.id==="ed-reset"){S.scan.corners=defaultCorners(S.scan.img);S.scan.off=null;render();return}
-  if(t.id==="ed-straight"){S.scan.off=null;render();return}
-  if(t.id==="ed-preview") return previewCuts();
-  if(t.id==="ed-retake"){S.scan=null;render();return}
-  if(t.id==="ed-scan") return runScan();
-  if(t.id==="rv-cancel"){S.review=null;render();return}
+  if(t.id==="ol-add"){S.scan.adding=!S.scan.adding;render();return}
+  if(t.id==="ol-rot"){findCards(rotateCanvas(S.scan.img));return}
+  if(t.id==="ol-retake"){S.scan=null;render();return}
+  if(t.id==="ol-scan") return runScan();
+  if(t.id==="rv-back"){S.review=null;render();return}
   if(t.id==="rv-add") return commitReview();
   if(t.id==="refresh") return refreshPrices(t);
   if(t.id==="exp-json") return download(`binderscan-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({app:"BinderScan",version:1,cards:S.coll},null,1),"application/json");
@@ -974,14 +936,12 @@ document.addEventListener("input",e=>{
   if(id==="s-key"){s.apiKey=e.target.value.trim();saveSet()}
   if(id==="s-model"){s.model=e.target.value.trim()||DEFAULT_SETTINGS.model;saveSet()}
   if(id==="s-cid"){s.countryId=parseInt(e.target.value)||7;saveSet()}
-  if(id==="s-inset"){s.inset=+e.target.value;$("#s-inset-v").textContent=s.inset+"%";saveSet()}
 });
 document.addEventListener("change",e=>{
   const id=e.target.id, s=S.settings;
   if(id==="csort"){S.sort=e.target.value;render()}
   if(id==="s-country"){s.country=e.target.value;s.countryId=COUNTRIES.find(c=>c[0]===s.country)[1];saveSet();render()}
   if(id==="s-engine"){s.engine=e.target.value;saveSet();if(s.engine==="claude"&&!s.apiKey)toast("Add your API key below to use Claude")}
-  if(id==="s-langs"){s.ocrLangs=e.target.value;saveSet()}
 });
 const _render=render; render=function(){_render();const cs=$("#csort");if(cs)cs.value=S.sort};
 if("serviceWorker" in navigator&&location.protocol==="https:") navigator.serviceWorker.register("sw.js").catch(()=>{});
