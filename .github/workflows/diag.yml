@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       ids:
-        description: "Comma-separated Scryfall card ids"
+        description: "Comma-separated Scryfall card ids or set:number pairs (e.g. fin:519)"
         required: true
 
 permissions:
@@ -30,7 +30,8 @@ jobs:
           ids = [i.strip() for i in os.environ["IDS"].split(",") if i.strip()]
           cards = []
           for k in range(0, len(ids), 75):
-              body = json.dumps({"identifiers": [{"id": i} for i in ids[k:k + 75]]}).encode()
+              idents = [{"set": i.split(":")[0], "collector_number": i.split(":")[1]} if ":" in i else {"id": i} for i in ids[k:k + 75]]
+              body = json.dumps({"identifiers": idents}).encode()
               req = urllib.request.Request("https://api.scryfall.com/cards/collection", data=body, headers=UA)
               cards += json.load(urllib.request.urlopen(req, timeout=60))["data"]
               time.sleep(0.2)
