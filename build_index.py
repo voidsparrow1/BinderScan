@@ -5,11 +5,12 @@ Run by .github/workflows/build-index.yml. Images already hashed are kept in .cac
 so only new cards are downloaded after the first build.
 
 Index format (little-endian):
-  16-byte header: b"BSIX", version u32, count u32, reserved u32
+  16-byte header: b"BSIX", version u32, count u32, words per card u32
   count x 16 bytes  Scryfall card id (UUID bytes)
   count x 1 byte    face (0 = front, 1 = back), padded to a multiple of 4
-  count x 4 u32     full-card pHash (2 words), art-box pHash (2 words)
-The hash maths must match cardHash() in index.html.
+  count x 8 u32     version 2 fingerprint: for the high-pass view and the gradient view,
+                    a full-card pHash (2 words) and an art-box pHash (2 words)
+The hash maths must match cardHashV2() in index.html.
 """
 import concurrent.futures as cf
 import gzip, io, json, os, struct, sys, time, traceback, urllib.request, uuid
@@ -17,6 +18,7 @@ import gzip, io, json, os, struct, sys, time, traceback, urllib.request, uuid
 import numpy as np
 from PIL import Image
 
+HASH_VERSION, WORDS = 2, 8
 HN, HM = 128, 176                      # intermediate card size (63:88)
 ART = (0.08, 0.11, 0.92, 0.56)         # art box as fractions: x0, y0, x1, y1
 SKIP_LAYOUTS = {"art_series", "token", "double_faced_token", "emblem", "vanguard", "planar", "scheme"}
@@ -52,6 +54,39 @@ def phash(a):
     w0 = sum(1 << j for j in range(32) if bits[j])
     w1 = sum(1 << j for j in range(32) if bits[32 + j])
     return w0, w1
+
+
+def box_blur(a, r, times=1):
+    """Mean filter of radius r with edge clamping, applied `times` times (same maths as boxBlur() in index.html)."""
+    for _ in range(times):
+        for axis in (0, 1):
+            p = np.pad(a, [(r + 1, r) if ax == axis else (0, 0) for ax in (0, 1)], mode="edge")
+            c = np.cumsum(p, axis=axis)
+            n = a.shape[axis]
+            hi = np.take(c, np.arange(2 * r + 1, 2 * r + 1 + n), axis=axis)
+            lo = np.take(c, np.arange(0, n), axis=axis)
+            a = (hi - lo) / (2 * r + 1)
+    return a
+
+
+def prep_v2(g):
+    """Two glare-robust views of the card: high-pass (removes smooth glare and haze) and blurred gradient magnitude."""
+    hp = g - box_blur(g, 11, 3)
+    gp = np.pad(g, 1, mode="edge")
+    gx = gp[1:-1, 2:] - gp[1:-1, :-2]
+    gy = gp[2:, 1:-1] - gp[:-2, 1:-1]
+    gr = box_blur(np.sqrt(gx * gx + gy * gy), 1, 2)
+    return hp, gr
+
+
+def card_hash_v2(im):
+    im = im.convert("RGB").resize((HN, HM), Image.BICUBIC)
+    a = np.asarray(im, dtype=np.float64)
+    g = a[..., 0] * 0.299 + a[..., 1] * 0.587 + a[..., 2] * 0.114
+    out = []
+    for v in prep_v2(g):
+        out += [*phash(WF[0] @ v @ WF[1].T), *phash(WA[0] @ v @ WA[1].T)]
+    return tuple(out)
 
 
 def card_hash(im):
@@ -172,15 +207,16 @@ def main():
                     if face.get("image_uris"):
                         entries.append((c["id"], i, face["image_uris"]["small"]))
     os.remove(cards_path)
-    todo = [e for e in entries if e[2] not in cache]
+    key = lambda e: f"v{HASH_VERSION}|{e[2]}"
+    todo = [e for e in entries if key(e) not in cache]
     note(f"card images: {len(entries)}, new to hash: {len(todo)}")
 
     def work(e):
         try:
-            return e[2], card_hash(Image.open(io.BytesIO(fetch(e[2]))))
+            return key(e), card_hash_v2(Image.open(io.BytesIO(fetch(e[2]))))
         except Exception as ex:
             print("skipped", e[2], ex, file=sys.stderr)
-            return e[2], None
+            return key(e), None
 
     t0, done = time.time(), 0
     with cf.ThreadPoolExecutor(16) as pool:
@@ -192,26 +228,26 @@ def main():
                 print(f"{done}/{len(todo)} hashed, {time.time() - t0:.0f}s", flush=True)
                 save_cache(cache, cache_path)
 
-    keep = {e[2] for e in entries}
+    keep = {key(e) for e in entries}
     cache = {k: v for k, v in cache.items() if k in keep}
     save_cache(cache, cache_path)
 
-    rows = sorted((e for e in entries if e[2] in cache), key=lambda e: (e[0], e[1]))
-    buf = bytearray(b"BSIX" + struct.pack("<III", 1, len(rows), 0))
+    rows = sorted((e for e in entries if key(e) in cache), key=lambda e: (e[0], e[1]))
+    buf = bytearray(b"BSIX" + struct.pack("<III", HASH_VERSION, len(rows), WORDS))
     for e in rows:
         buf += uuid.UUID(e[0]).bytes
     buf += bytes(e[1] for e in rows)
     while len(buf) % 4:
         buf += b"\0"
-    buf += np.array([cache[e[2]] for e in rows], dtype="<u4").tobytes()
+    buf += np.array([cache[key(e)] for e in rows], dtype="<u4").tobytes()
 
-    index_path = os.path.join(data_dir, "index.bin")
+    index_path = os.path.join(data_dir, f"index{HASH_VERSION}.bin")
     old = open(index_path, "rb").read() if os.path.exists(index_path) else b""
     if bytes(buf) != old:
         with open(index_path, "wb") as f:
             f.write(buf)
-        with open(os.path.join(data_dir, "meta.json"), "w") as f:
-            json.dump({"version": 1, "count": len(rows), "built": int(time.time())}, f)
+        with open(os.path.join(data_dir, f"meta{HASH_VERSION}.json"), "w") as f:
+            json.dump({"version": HASH_VERSION, "words": WORDS, "count": len(rows), "built": int(time.time())}, f)
         note(f"index written: {len(rows)} card faces, {len(buf) / 1e6:.1f} MB")
     else:
         note("index unchanged")
