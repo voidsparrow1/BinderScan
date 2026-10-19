@@ -1,8 +1,8 @@
 {
   "id": "/BinderScan/",
-  "name": "BinderScan",
-  "short_name": "BinderScan",
-  "description": "Scan MTG binder pages and track Cardmarket prices",
+  "name": "Sleevescope",
+  "short_name": "Sleevescope",
+  "description": "Scan MTG cards and binder pages, track Cardmarket prices",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

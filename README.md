@@ -1,4 +1,6 @@
-# BinderScan
+# Sleevescope
+
+_(formerly BinderScan; the repository and web address keep the old name so installs and saved data carry over)_
 
 Scan Magic: The Gathering binder pages (1, 4, 9 or 12 pockets) or single cards, review every card (foil / exact printing), and keep a collection valued with Cardmarket prices.
 

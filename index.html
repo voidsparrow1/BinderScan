@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>BinderScan</title>
+<title>Sleevescope</title>
 <meta name="theme-color" content="#161b26">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -133,7 +133,7 @@ input[type=text],input[type=search],input[type=password],input[type=number],sele
 <body>
 <div class="app">
   <header>
-    <h1>BinderScan</h1>
+    <h1>Sleevescope</h1>
     <span class="sub" id="hdr-sub">MTG · Cardmarket</span>
   </header>
   <main id="main"></main>
@@ -154,8 +154,8 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const APP_VERSION = "v10";
-const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1";
+const APP_VERSION = "v11";
+const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1"; // old names kept on purpose: renaming would lose saved data
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){toast("Couldn't save: storage full or blocked")}}
@@ -902,7 +902,7 @@ $("#file-pick").onchange=e=>{onPhoto(e.target.files[0]);e.target.value=""};
 $("#file-import").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   try{const d=JSON.parse(await f.text());const items=Array.isArray(d)?d:d.cards;if(!Array.isArray(items))throw 0;
     const ids=new Set(S.coll.map(x=>x.id));let n=0;for(const it of items)if(it.sid&&!ids.has(it.id)){S.coll.push({...it,id:it.id||uid()});n++}
-    saveColl();render();toast(`Imported ${n} entries`)}catch{toast("That file isn't a BinderScan backup.")}};
+    saveColl();render();toast(`Imported ${n} entries`)}catch{toast("That file isn't a Sleevescope backup.")}};
 function download(name,text,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
 async function refreshPrices(btn){
   btn.disabled=true;btn.textContent="Refreshing…";
@@ -925,10 +925,10 @@ document.addEventListener("click",e=>{
   if(t.id==="add-hand") return addByHand();
   if(t.id==="rv-add") return commitReview();
   if(t.id==="refresh") return refreshPrices(t);
-  if(t.id==="exp-json") return download(`binderscan-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({app:"BinderScan",version:1,cards:S.coll},null,1),"application/json");
+  if(t.id==="exp-json") return download(`sleevescope-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({app:"Sleevescope",version:1,cards:S.coll},null,1),"application/json");
   if(t.id==="exp-csv"){const h=["Name","Set","Set code","Number","Language","Foil","Qty","Price EUR","Total EUR","Binder","Cardmarket ID"];
     const rows=S.coll.map(e=>[e.name,e.setName,e.set.toUpperCase(),e.num,e.lang,e.foil?"yes":"no",e.qty,priceOf(e)??"",priceOf(e)!=null?(priceOf(e)*e.qty).toFixed(2):"",e.binder,e.cmId??""]);
-    return download("binderscan.csv",[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n"),"text/csv")}
+    return download("sleevescope.csv",[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n"),"text/csv")}
   if(t.id==="imp-json") return $("#file-import").click();
   const ci=t.closest(".ci"); if(ci) return cardDetail(ci.dataset.id);
   const rv=t.closest(".rv"); if(rv&&t.dataset.act){
