@@ -1,0 +1,58 @@
+name: Diagnostics - Cardmarket catalogue
+
+# One-off helper: downloads Cardmarket's public product catalogue and price guide for Magic and
+# writes a small summary to the diag branch, to see which fields they contain.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      - name: Probe
+        run: |
+          mkdir -p out && cd out
+          python3 - <<'PY'
+          import json, urllib.request, gzip, io
+          UA={"User-Agent":"Mozilla/5.0 (Sleevescope catalogue check)"}
+          base="https://downloads.s3.cardmarket.com/productCatalog/"
+          urls={"singles":base+"productList/products_singles_1.json","nonsingles":base+"productList/products_nonsingles_1.json",
+                "priceguide":base+"priceGuide/price_guide_1.json","expansions_guess1":base+"expansions/expansions_1.json",
+                "expansions_guess2":base+"productList/expansions_1.json"}
+          summary={}
+          for k,u in urls.items():
+              try:
+                  raw=urllib.request.urlopen(urllib.request.Request(u,headers=UA),timeout=120).read()
+                  if raw[:2]==b"\x1f\x8b": raw=gzip.decompress(raw)
+                  d=json.loads(raw)
+                  info={"bytes":len(raw),"top_keys":list(d.keys()) if isinstance(d,dict) else type(d).__name__}
+                  for key,val in (d.items() if isinstance(d,dict) else []):
+                      if isinstance(val,list) and val:
+                          info["list_key"]=key; info["count"]=len(val); info["sample"]=val[:3]
+                          if k=="singles":
+                              info["aerith"]=[p for p in val if "Aerith Gainsborough" in p.get("name","")][:12]
+                              info["loran"]=[p for p in val if p.get("name","").startswith("Loran of the Third Path")][:8]
+                              info["with_version"]=sum(1 for p in val if "(V." in p.get("name",""))
+                          if k=="priceguide":
+                              info["for_ids"]=[p for p in val if p.get("idProduct") in (682327,824347,581666)]
+                      elif not isinstance(val,list): info[key]=val
+                  summary[k]=info
+              except Exception as e:
+                  summary[k]={"error":str(e)[:200]}
+          json.dump(summary,open("cm_probe.json","w"),indent=1)
+          print("::notice::"+", ".join(f"{k}: {v.get('count',v.get('error','?'))}" for k,v in summary.items()))
+          PY
+      - name: Save to diag branch
+        run: |
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch -q origin diag && git checkout -q -B diag origin/diag || git checkout -q --orphan diag
+          cp ../out/cm_probe.json .
+          git add cm_probe.json && git commit -q -m "Cardmarket catalogue probe" && git push -q origin diag
