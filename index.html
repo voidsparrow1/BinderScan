@@ -170,7 +170,7 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const APP_VERSION = "v12";
+const APP_VERSION = "v13";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1"; // old names kept on purpose: renaming would lose saved data
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
@@ -231,12 +231,12 @@ async function prints(card){
   return (await printsRaw(card.oracle)).map(slim);
 }
 function priceOf(e,foil=e.foil){ if(e.override!=null) return e.override; return foil?e.eurFoil:e.eur }
+// Scryfall's Cardmarket link is a partner redirect (Products?idProduct=…&referrer=scryfall). Use it exactly as given:
+// adding parameters to it gets the request blocked by Cardmarket's bot protection, and filters don't survive the redirect anyway.
 function cmLink(e){
-  let u;
-  try{u=new URL(e.cmUrl||`https://www.cardmarket.com/en/Magic/Products/Search?searchString=${encodeURIComponent(e.name)}`)}catch{u=new URL("https://www.cardmarket.com/en/Magic")}
-  u.searchParams.set("sellerCountry",S.settings.countryId);
-  if(e.foil) u.searchParams.set("isFoil","Y");
-  return u.toString();
+  if(e.cmUrl&&/^https:\/\/www\.cardmarket\.com\//.test(e.cmUrl)) return e.cmUrl;
+  if(e.cmId) return `https://www.cardmarket.com/en/Magic/Products?idProduct=${e.cmId}&referrer=scryfall`;
+  return `https://www.cardmarket.com/en/Magic/Products/Search?searchString=${encodeURIComponent(e.name)}`;
 }
 
 /* ===================== image helpers ===================== */
@@ -818,8 +818,9 @@ function cardDetail(id){
     <img class="detail-img" src="${esc(e.imgL||e.img)}" alt="">
     <div class="meta" style="justify-content:space-between"><span>${esc(e.setName)}, ${esc(e.set.toUpperCase())} ${esc(e.num)}</span><span class="rar rar-${e.rarity}">${esc(cap(e.rarity))}</span></div>
     <div class="stats"><div><span>Trend</span><b>${eur(e.eur)}</b></div><div><span>Foil trend</span><b>${eur(e.eurFoil)}</b></div><div><span>Copies</span><b>${e.qty}</b></div></div>
-    <a class="btn primary" href="${esc(cmLink(e))}" target="_blank" rel="noopener">Cheapest from ${esc(S.settings.country)} on Cardmarket</a>
-    <div class="field"><label class="label" for="d-ovr">Your price from Cardmarket (optional)</label><input type="number" id="d-ovr" inputmode="decimal" step="0.01" min="0" placeholder="e.g. cheapest ${esc(S.settings.country)} offer" value="${e.override??""}"><small>Overrides the trend price in your totals. Leave empty to use the trend.</small></div>
+    <a class="btn primary" href="${esc(cmLink(e))}" target="_blank" rel="noopener">Open on Cardmarket</a>
+    <p class="hint">On the card's page, use Cardmarket's filter to show sellers from ${esc(S.settings.country)} only${e.foil?" and foil copies":""}, sorted by price.</p>
+    <div class="field"><label class="label" for="d-ovr">Your price from Cardmarket (optional)</label><input type="number" id="d-ovr" inputmode="decimal" step="0.01" min="0" placeholder="e.g. cheapest offer from ${esc(S.settings.country)}" value="${e.override??""}"><small>Overrides the trend price in your totals. Leave empty to use the trend.</small></div>
     <div class="row"><button class="chip foil" id="d-foil" aria-pressed="${e.foil}" ${canFoil?"":"disabled"}>✦ Foil</button><button class="chip" id="d-ver">Version</button>
       <span class="qty"><button id="d-dec" aria-label="Fewer">−</button><span id="d-q">${e.qty}</span><button id="d-inc" aria-label="More">+</button></span></div>
     <div class="field"><label class="label" for="d-binder">Binder</label><input type="text" id="d-binder" value="${esc(e.binder)}"></div>
@@ -846,8 +847,7 @@ function viewSettings(){
   return `<section class="view">
     <div class="panel"><span class="label">Location</span>
       <div class="field"><label for="s-country">Your country</label><select id="s-country">${COUNTRIES.map(([n])=>`<option ${n===s.country?"selected":""}>${n}</option>`).join("")}</select>
-      <small>Used for the "Cheapest from ${esc(s.country)}" link, which opens Cardmarket filtered to sellers in your country, sorted cheapest first.</small></div>
-      <div class="field"><label for="s-cid">Cardmarket seller-country ID</label><input type="number" id="s-cid" value="${s.countryId}"><small>If Cardmarket shows another country after tapping the link, correct this number.</small></div>
+      <small>Shown as a reminder for the seller filter when you open a card on Cardmarket.</small></div>
     </div>
     <div class="panel"><span class="label">Card recognition</span>
       <div class="field"><label for="s-engine">Engine</label><select id="s-engine"><option value="image" ${s.engine==="image"?"selected":""}>Artwork match (free, recommended)</option><option value="claude" ${s.engine==="claude"?"selected":""}>Claude vision (needs API key)</option></select>
@@ -855,7 +855,7 @@ function viewSettings(){
       <div class="field"><label for="s-key">Anthropic API key</label><input type="password" id="s-key" value="${esc(s.apiKey)}" placeholder="sk-ant-…" autocomplete="off"><small>Only used with Claude vision. Stored on this phone only and sent straight to Anthropic.</small></div>
       <div class="field"><label for="s-model">Claude model</label><input type="text" id="s-model" value="${esc(s.model)}"></div>
     </div>
-    <div class="panel"><span class="label">About prices</span><p class="muted">Prices are Cardmarket trend prices (EUR) supplied by Scryfall, refreshed daily. Cardmarket doesn't offer price access to new apps, so the cheapest offer from your country is one tap away on each card. You can enter it as your own price.</p></div>
+    <div class="panel"><span class="label">About prices</span><p class="muted">Prices are Cardmarket trend prices (EUR) supplied by Scryfall, refreshed daily. Cardmarket doesn't offer price access to new apps, so each card has an "Open on Cardmarket" button for the live offers. You can enter a price you found there as your own.</p></div>
   </section>`;
 }
 
@@ -968,7 +968,6 @@ document.addEventListener("input",e=>{
   if(id==="cq"){S.q=e.target.value;const pos=e.target.selectionStart;render();const n=$("#cq");n.focus();n.setSelectionRange(pos,pos)}
   if(id==="s-key"){s.apiKey=e.target.value.trim();saveSet()}
   if(id==="s-model"){s.model=e.target.value.trim()||DEFAULT_SETTINGS.model;saveSet()}
-  if(id==="s-cid"){s.countryId=parseInt(e.target.value)||7;saveSet()}
 });
 document.addEventListener("change",e=>{
   const id=e.target.id, s=S.settings;
