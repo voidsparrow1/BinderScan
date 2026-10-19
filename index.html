@@ -71,7 +71,10 @@ a.btn.primary{color:var(--accent-fg)}
 .btn.wide{flex:1}
 .btn svg{width:20px;height:20px}
 input[type=text],input[type=search],input[type=password],input[type=number],select{width:100%;min-height:48px;border:1px solid transparent;background:var(--surface-2);border-radius:var(--radius-s);padding:10px 14px;outline:none}
-input:focus,select:focus{border-color:var(--accent)}
+textarea{width:100%;border:1px solid transparent;background:var(--surface-2);border-radius:var(--radius-s);padding:12px 14px;outline:none;resize:vertical;font:14px/1.5 var(--f-ui);color:var(--fg)}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+.check{display:flex;gap:10px;align-items:flex-start;font-size:14px}
+.check input{width:20px;height:20px;accent-color:var(--accent);margin:1px 0 0;flex:none}
 input[type=range]{accent-color:var(--accent)}
 .field{display:flex;flex-direction:column;gap:6px}
 .field small{color:var(--muted);font-size:13px}
@@ -173,7 +176,7 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const APP_VERSION = "v15";
+const APP_VERSION = "v16";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1", SK_WANTS = "sleevescope.wants.v1"; // old names kept on purpose: renaming would lose saved data
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
@@ -872,7 +875,8 @@ function viewWants(){
     </div>`;
   if(!S.wants.length) return `<section class="view"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/><path d="M9.5 9.5h5M12 7v5"/></svg><h2>Nothing on your wants list</h2><p>Note cards you still need here, separate from your collection. Name a list, for example a deck you're building, and add cards to it.</p></div>${addPanel}</section>`;
   return `<section class="view">
-    <div class="hero"><span class="value">${eur(cost)}</span><span class="sub">${n} card${n===1?"":"s"} to get${cur?` for ${esc(cur)}`:""}</span></div>
+    <div class="row" style="justify-content:space-between;align-items:flex-end"><div class="hero"><span class="value">${eur(cost)}</span><span class="sub">${n} card${n===1?"":"s"} to get${cur?` for ${esc(cur)}`:""}</span></div>
+      <button class="btn small" id="copy-wants"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2"/></svg>Copy for Cardmarket</button></div>
     ${lists.length>1?`<div class="chips">${["",...lists].map(l=>`<button class="chip" data-wlist="${esc(l)}" aria-pressed="${l===cur}" style="${l===cur?"background:var(--accent-soft);color:var(--accent)":""}">${l?esc(l):"All lists"}</button>`).join("")}</div>`:""}
     <div class="list">${shown.map(w=>{const own=ownedCount(w.name);return `<button class="ci" data-wid="${w.id}">
       <img src="${esc(w.img)}" alt="" loading="lazy">
@@ -881,6 +885,29 @@ function viewWants(){
       <span class="right"><span class="price">${eur(priceOf(w))}</span><span class="muted" style="font-size:13px">×${w.qty}</span></span></button>`}).join("")}</div>
     ${addPanel}
   </section>`;
+}
+// Cardmarket's wants-list import: one card per line, "4 Card Name" (any version) or "4 Card Name (Expansion Name)"
+function cmWantsText(items,withSet){
+  const m=new Map();
+  for(const w of items){const k=w.name+(withSet&&!w.any&&w.setName?` (${w.setName})`:"");m.set(k,(m.get(k)||0)+w.qty)}
+  return[...m].map(([k,q])=>`${q} ${k}`).join("\n");
+}
+function copyWants(){
+  const lists=wantLists(),cur=lists.includes(S.wantList)?S.wantList:"",items=S.wants.filter(w=>!cur||w.list===cur);
+  const n=items.reduce((s,w)=>s+w.qty,0),foils=items.some(w=>w.foil),exact=items.some(w=>!w.any);
+  sheet("Copy for Cardmarket",`
+    <p class="hint">${n} card${n===1?"":"s"} ${cur?`from ${esc(cur)}`:"from all lists"}. On Cardmarket, open <b>Wants</b>, create or open a list, paste this into the box and tap <b>Add</b>.</p>
+    <textarea id="cw-text" rows="9" readonly aria-label="List for Cardmarket"></textarea>
+    ${exact?`<label class="check"><input type="checkbox" id="cw-set"><span>Include the expansion for cards with a specific version<br><small class="muted">Cardmarket matches expansions by its own names. If a card isn't found, copy again without this.</small></span></label>`:""}
+    ${foils?`<p class="hint">Foil isn't part of Cardmarket's list format. Set foil on those cards in Cardmarket after adding them.</p>`:""}
+    <button class="btn primary" id="cw-copy">Copy list</button>`,
+  body=>{
+    const ta=$("#cw-text",body),cb=$("#cw-set",body),fill=()=>{ta.value=cmWantsText(items,cb?.checked)};fill();if(cb)cb.onchange=fill;
+    $("#cw-copy",body).onclick=async ev=>{
+      try{await navigator.clipboard.writeText(ta.value);ev.currentTarget.textContent="Copied";toast("List copied. Paste it into your Cardmarket wants list.")}
+      catch{ta.removeAttribute("readonly");ta.focus();ta.select();toast("Couldn't copy automatically. The list is selected: copy it from the menu.")}
+    };
+  });
 }
 function wantDetail(id){
   const w=S.wants.find(x=>x.id===id); if(!w) return;
@@ -1033,6 +1060,7 @@ document.addEventListener("click",e=>{
     return download("sleevescope.csv",[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n"),"text/csv")}
   if(t.id==="imp-json") return $("#file-import").click();
   if(t.id==="add-want") return addWant();
+  if(t.id==="copy-wants") return copyWants();
   if(t.dataset.wlist!==undefined){S.wantList=t.dataset.wlist;render();return}
   const ci=t.closest(".ci"); if(ci&&ci.dataset.wid) return wantDetail(ci.dataset.wid); if(ci) return cardDetail(ci.dataset.id);
   const rv=t.closest(".rv"); if(rv&&t.dataset.act){
