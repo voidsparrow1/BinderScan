@@ -7,10 +7,10 @@ printings of the same card within one expansion V.1, V.2, … in the order they 
 
 Expansion names come from MTGJSON's Cardmarket names. MTGJSON often lacks the "Extras" expansion of recent sets;
 an unnamed expansion holding a set's showcase/borderless printings (per Scryfall) next to a main expansion MTGJSON
-knows is named "<main name>: Extras". Expansions without a reliable name are left out (the app then copies the card
-as any version).
+knows is named "<main name>: Extras". For the rest, "guess" holds a suggestion (Scryfall's set name, ": Extras" for
+showcase expansions) that the app shows for you to confirm or correct once.
 
-Format: {"built": unix, "exp": {idExpansion: name}, "p": [[idProduct delta, idExpansion, v], ...]}.
+Format: {"built": unix, "exp": {idExpansion: name}, "guess": {idExpansion: suggestion}, "p": [[idProduct delta, idExpansion, v], ...]}.
 """
 import collections, gzip, json, os, time, urllib.request
 import build_index as BI   # Scryfall bulk-data helpers
@@ -97,6 +97,17 @@ def main():
             print(f"::notice title=cm_debug {e}::{n} products; sets {[(c, st['names'][c], k) for c, k in top] if st else '-'}; "
                   f"showcase share {round(st['variant'] / max(1, st['n']), 2) if st else '-'}; same-set expansions {sib}")
     exp = {**derived, **known}
+    # Suggestions for the rest (shown in the app for you to confirm): Scryfall's set name, "+: Extras" for an
+    # expansion of showcase printings next to the set's main one.
+    guess = {}
+    for code, exps in by_set.items():
+        share = {e: stats[e]["variant"] / stats[e]["n"] for e in exps}
+        mains = [e for e in exps if share[e] < 0.5]
+        for e in exps:
+            if e in exp:
+                continue
+            base = next((exp[m] for m in mains if m in exp), stats[e]["names"][code])
+            guess[e] = base + ": Extras" if share[e] >= 0.5 and mains and e not in mains else stats[e]["names"][code]
     groups = collections.defaultdict(list)
     for p in singles:
         groups[(p["idExpansion"], p["name"])].append(p["idProduct"])
@@ -113,16 +124,17 @@ def main():
     out_exp = {str(k): v for k, v in sorted(exp.items()) if k in used}
     recent = [p for p in singles if p["idProduct"] >= 850000]
     cov = sum(1 for p in recent if str(p["idExpansion"]) in out_exp) / max(1, len(recent))
-    out = {"built": int(time.time()), "exp": out_exp, "p": rows}
+    out_guess = {str(k): v for k, v in sorted(guess.items()) if k in used and str(k) not in out_exp}
+    out = {"built": int(time.time()), "exp": out_exp, "guess": out_guess, "p": rows}
 
     path = os.path.join(root, "data", "cm.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     old = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
-    if old.get("p") != rows or old.get("exp") != out_exp:
+    if old.get("p") != rows or old.get("exp") != out_exp or old.get("guess") != out_guess:
         text = json.dumps(out, separators=(",", ":"), ensure_ascii=False)
         open(path, "w", encoding="utf-8").write(text)
         print(f"::notice title=build_cm::cm.json written: {len(rows)} products, {len(out_exp)} named expansions "
-              f"({len(known)} from MTGJSON), recent-set coverage {100*cov:.0f}%, {len(text)/1e6:.1f} MB")
+              f"({len(known)} from MTGJSON), {len(out_guess)} suggested, recent-set coverage {100*cov:.0f}%, {len(text)/1e6:.1f} MB")
     else:
         print(f"::notice title=build_cm::cm.json unchanged, recent-set coverage {100*cov:.0f}%")
 
