@@ -44,7 +44,7 @@ main{flex:1;overflow-y:auto;padding:8px 16px calc(120px + env(safe-area-inset-bo
 .view{display:flex;flex-direction:column;gap:16px;max-width:720px;margin:0 auto}
 /* floating tab bar */
 nav.tabs{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:6;max-width:520px;margin:0 auto;
-  display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:6px;border-radius:24px;
+  display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px;border-radius:24px;
   background:rgba(32,29,42,.84);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.35)}
 nav.tabs button{background:none;border:0;border-radius:18px;padding:8px 4px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;font-weight:600;color:var(--muted)}
 nav.tabs button[aria-current="page"]{color:var(--accent);background:var(--accent-soft)}
@@ -158,6 +158,7 @@ input[type=range]{accent-color:var(--accent)}
   <nav class="tabs" aria-label="Sections">
     <button data-tab="scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M8 6l1.5-2h5L16 6"/><circle cx="12" cy="13" r="3.5"/></svg>Scan</button>
     <button data-tab="collection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="7" rx="1"/><rect x="9.5" y="3" width="5" height="7" rx="1"/><rect x="16" y="3" width="5" height="7" rx="1"/><rect x="3" y="14" width="5" height="7" rx="1"/><rect x="9.5" y="14" width="5" height="7" rx="1"/><rect x="16" y="14" width="5" height="7" rx="1"/></svg>Collection</button>
+    <button data-tab="wants"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/><path d="M9.5 9.5h5M12 7v5"/></svg>Wants</button>
     <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
   </nav>
 </div>
@@ -172,8 +173,8 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const APP_VERSION = "v14";
-const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1"; // old names kept on purpose: renaming would lose saved data
+const APP_VERSION = "v15";
+const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1", SK_WANTS = "sleevescope.wants.v1"; // old names kept on purpose: renaming would lose saved data
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){toast("Couldn't save: storage full or blocked")}}
@@ -181,13 +182,14 @@ const S = {
   tab:"scan",
   settings:Object.assign({},DEFAULT_SETTINGS,load(SK_SET,{})),
   coll:load(SK,[]),
+  wants:load(SK_WANTS,[]), wantList:"",
   scan:null,       // {img canvas, pyr, cards:[{quad,sure,d,on}], detecting, adding}
   review:null,     // [{...}]
   scanning:false,
   progress:0,
   q:"",sort:"value"
 };
-const saveColl=()=>save(SK,S.coll), saveSet=()=>save(SK_SET,S.settings);
+const saveColl=()=>save(SK,S.coll), saveSet=()=>save(SK_SET,S.settings), saveWants=()=>save(SK_WANTS,S.wants);
 if(S.settings.engine!=="claude")S.settings.engine="image";
 const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -659,7 +661,7 @@ function addByHand(){
     if(!S.review) S.review=[];
     S.review.push({key:uid(),n:S.review.length+1,thumb:null,big:null,status:exact?"matched":"guess",ocr:exact?"Added by set + number":"Added by name",
       card:p,foil:!p.finishes.includes("nonfoil"),qty:1,include:true,manual:true});
-    S.tab="scan";render();
+    S.tab="scan";render();if(!exact)toast("Added. Tap Version if you have a different printing.");
     requestAnimationFrame(()=>document.querySelector(".rv:last-child")?.scrollIntoView({behavior:"smooth",block:"center"}));
   },null,"Add a card");
 }
@@ -711,7 +713,7 @@ function manualSearch(initial,onPick,photo,title="Find card"){
         out.onclick=async e=>{const b=e.target.closest("[data-n]");if(!b)return;let c=await sf("/cards/named?exact="+encodeURIComponent(b.dataset.n));
           // by name: start from the newest regular printing rather than whatever promo Scryfall lists first
           if(c){try{const reg=(await printsRaw(c.oracle_id)).find(x=>!isPromo(x)&&!x.digital);if(reg)c=reg}catch{}
-            onPick(slim(c),false);close();toast("Added. Tap Version if you have a different printing.")}};
+            onPick(slim(c),false);close()}};
         out.innerHTML=(r?.data||[]).slice(0,12).map(n=>`<button class="btn" style="justify-content:flex-start" data-n="${esc(n)}">${esc(n)}</button>`).join("")||`<p class="muted">Nothing matches "${esc(v)}". For set + number, use the format FIN 519.</p>`;
       }catch(e){out.innerHTML=`<p>${esc(e.message)}</p>`}};
     q.oninput=()=>{clearTimeout(t);t=setTimeout(go,300)};go();setTimeout(()=>q.focus(),50);
@@ -725,6 +727,7 @@ function render(){
   const m=$("#main");
   if(S.tab==="scan") m.innerHTML=viewScan();
   else if(S.tab==="collection") m.innerHTML=viewCollection();
+  else if(S.tab==="wants") m.innerHTML=viewWants();
   else m.innerHTML=viewSettings();
   if(S.tab==="scan"&&S.scan&&!S.review) mountOutlineEditor();
   if(S.tab==="scan"&&S.review) renderReview();
@@ -815,7 +818,7 @@ function viewCollection(){
     ${backupPanel()}
   </section>`;
 }
-const backupPanel=()=>`<div class="panel"><span class="label">Backup</span><p class="hint">Your collection lives on this phone only. Export it now and then.</p><div class="row"><button class="btn small" id="exp-csv">Export CSV</button><button class="btn small" id="exp-json">Export backup</button><button class="btn small" id="imp-json">Import backup</button></div></div>`;
+const backupPanel=()=>`<div class="panel"><span class="label">Backup</span><p class="hint">Your collection and wants live on this phone only. Export a backup now and then.</p><div class="row"><button class="btn small" id="exp-csv">Export CSV</button><button class="btn small" id="exp-json">Export backup</button><button class="btn small" id="imp-json">Import backup</button></div></div>`;
 function cardDetail(id){
   const e=S.coll.find(x=>x.id===id); if(!e) return;
   const canFoil=e.finishes.includes("foil")&&e.finishes.includes("nonfoil");
@@ -845,6 +848,74 @@ function cardDetail(id){
     let armed=false;
     $("#d-del",body).onclick=ev=>{if(!armed){armed=true;ev.currentTarget.textContent="Tap again to remove";return}
       S.coll=S.coll.filter(x=>x.id!==e.id);saveColl();close();render();toast("Removed");};
+  });
+}
+/* ===================== wants ===================== */
+// Cards you want or need, kept apart from the collection, in one or more named lists.
+const ownedCount=name=>S.coll.filter(e=>e.name===name).reduce((s,e)=>s+e.qty,0);
+const wantLists=()=>[...new Set(S.wants.map(w=>w.list))].sort((a,b)=>a.localeCompare(b));
+function addWant(){
+  manualSearch("",(p,exact)=>{
+    const list=(S.settings.wantList||"Wants").trim()||"Wants",foil=!p.finishes.includes("nonfoil");
+    const ex=S.wants.find(w=>w.sid===p.sid&&w.list===list&&w.foil===foil);
+    if(ex) ex.qty++; else S.wants.push({...p,id:uid(),list,qty:1,foil,any:!exact,note:"",added:Date.now()});
+    saveWants();S.tab="wants";render();toast(`Added to ${list}`);
+  },null,"Add to wants");
+}
+function viewWants(){
+  const lists=wantLists(),cur=lists.includes(S.wantList)?S.wantList:"",shown=S.wants.filter(w=>!cur||w.list===cur)
+    .sort((a,b)=>a.list.localeCompare(b.list)||(priceOf(b)||0)-(priceOf(a)||0));
+  const n=shown.reduce((s,w)=>s+w.qty,0),cost=shown.reduce((s,w)=>s+(priceOf(w)||0)*w.qty,0);
+  const addPanel=`<div class="panel">
+      <div class="field"><label class="label" for="want-list">Add to list</label><input type="text" id="want-list" value="${esc(S.settings.wantList||"Wants")}" list="want-lists"><datalist id="want-lists">${lists.map(l=>`<option value="${esc(l)}">`).join("")}</datalist></div>
+      <button class="btn primary" id="add-want">Add a card</button>
+    </div>`;
+  if(!S.wants.length) return `<section class="view"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/><path d="M9.5 9.5h5M12 7v5"/></svg><h2>Nothing on your wants list</h2><p>Note cards you still need here, separate from your collection. Name a list, for example a deck you're building, and add cards to it.</p></div>${addPanel}</section>`;
+  return `<section class="view">
+    <div class="hero"><span class="value">${eur(cost)}</span><span class="sub">${n} card${n===1?"":"s"} to get${cur?` for ${esc(cur)}`:""}</span></div>
+    ${lists.length>1?`<div class="chips">${["",...lists].map(l=>`<button class="chip" data-wlist="${esc(l)}" aria-pressed="${l===cur}" style="${l===cur?"background:var(--accent-soft);color:var(--accent)":""}">${l?esc(l):"All lists"}</button>`).join("")}</div>`:""}
+    <div class="list">${shown.map(w=>{const own=ownedCount(w.name);return `<button class="ci" data-wid="${w.id}">
+      <img src="${esc(w.img)}" alt="" loading="lazy">
+      <span class="body"><span class="name">${esc(w.name)}${w.foil?' <span class="foil-dot">✦</span>':""}</span>
+        <span class="meta"><span>${w.any?"Any version":`${esc(w.set.toUpperCase())} ${esc(w.num)}`}</span>${!cur&&lists.length>1?`<span>${esc(w.list)}</span>`:""}${own?`<span style="color:var(--ok)">You have ${own}</span>`:""}</span></span>
+      <span class="right"><span class="price">${eur(priceOf(w))}</span><span class="muted" style="font-size:13px">×${w.qty}</span></span></button>`}).join("")}</div>
+    ${addPanel}
+  </section>`;
+}
+function wantDetail(id){
+  const w=S.wants.find(x=>x.id===id); if(!w) return;
+  const canFoil=w.finishes.includes("foil")&&w.finishes.includes("nonfoil"),own=ownedCount(w.name);
+  sheet(w.name,`
+    <img class="detail-img" src="${esc(w.imgL||w.img)}" alt="">
+    <div class="meta" style="justify-content:space-between"><span>${w.any?"Any version, shown: ":""}${esc(w.setName)}, ${esc(w.set.toUpperCase())} ${esc(w.num)}</span><span class="rar rar-${w.rarity}">${esc(cap(w.rarity))}</span></div>
+    ${own?`<p class="hint" style="color:var(--ok)">You already have ${own} in your collection.</p>`:""}
+    <div class="stats"><div><span>Trend</span><b>${eur(w.eur)}</b></div><div><span>Foil trend</span><b>${eur(w.eurFoil)}</b></div><div><span>Wanted</span><b>${w.qty}</b></div></div>
+    <div class="row"><a class="btn primary wide" href="${esc(w.any?CM_LINKS.search(w):cmLink(w))}" target="_blank" rel="noopener noreferrer">Open on Cardmarket</a><a class="btn ghost" href="${esc(CM_LINKS.search(w))}" target="_blank" rel="noopener noreferrer">Search by name</a></div>
+    <div class="row"><button class="chip foil" id="w-foil" aria-pressed="${w.foil}" ${canFoil?"":"disabled"}>✦ Foil</button><button class="chip" id="w-any" aria-pressed="${!!w.any}" style="${w.any?"background:var(--accent-soft);color:var(--accent)":""}">Any version</button><button class="chip" id="w-ver">Version</button>
+      <span class="qty"><button id="w-dec" aria-label="Fewer">−</button><span id="w-q">${w.qty}</span><button id="w-inc" aria-label="More">+</button></span></div>
+    <div class="field"><label class="label" for="w-list">List</label><input type="text" id="w-list" value="${esc(w.list)}" list="w-lists"><datalist id="w-lists">${wantLists().map(l=>`<option value="${esc(l)}">`).join("")}</datalist></div>
+    <div class="field"><label class="label" for="w-note">Note (optional)</label><input type="text" id="w-note" value="${esc(w.note||"")}" placeholder="e.g. trade with Max, max 5 €"></div>
+    <button class="btn" id="w-got">Got it: move 1 to ${esc(S.settings.binder||"collection")}</button>
+    <div class="row"><button class="btn primary wide" id="w-save">Save</button><button class="btn ghost" id="w-del" style="color:var(--bad)">Remove</button></div>`,
+  (body,close)=>{
+    let q=w.qty,foil=w.foil,any=!!w.any,ver=null;
+    $("#w-inc",body).onclick=()=>{q++;$("#w-q",body).textContent=q};
+    $("#w-dec",body).onclick=()=>{q=Math.max(1,q-1);$("#w-q",body).textContent=q};
+    $("#w-foil",body).onclick=ev=>{foil=!foil;ev.currentTarget.setAttribute("aria-pressed",foil)};
+    $("#w-any",body).onclick=ev=>{any=!any;ev.currentTarget.setAttribute("aria-pressed",any);ev.currentTarget.style.cssText=any?"background:var(--accent-soft);color:var(--accent)":""};
+    $("#w-ver",body).onclick=()=>pickVersion({...w,foil},p=>{ver=p;any=false;toast(`Version set to ${p.setName}. Tap Save.`)});
+    const apply=()=>{Object.assign(w,ver?{...ver,id:w.id,list:w.list,added:w.added,note:w.note}:{},{qty:q,foil,any,list:$("#w-list",body).value.trim()||"Wants",note:$("#w-note",body).value.trim()});
+      if(ver&&!w.finishes.includes(foil?"foil":"nonfoil")) w.foil=!foil};
+    $("#w-save",body).onclick=()=>{apply();saveWants();close();render();toast("Saved")};
+    $("#w-got",body).onclick=()=>{apply();
+      const binder=S.settings.binder.trim()||"Unsorted",card={...w};delete card.list;delete card.note;delete card.any;
+      const ex=S.coll.find(e=>e.sid===w.sid&&e.foil===w.foil&&e.binder===binder);
+      if(ex) ex.qty++; else S.coll.push({...card,id:uid(),qty:1,binder,override:null,added:Date.now()});
+      if(w.qty>1) w.qty--; else S.wants=S.wants.filter(x=>x.id!==w.id);
+      saveColl();saveWants();close();render();toast(`Moved to ${binder}`)};
+    let armed=false;
+    $("#w-del",body).onclick=ev=>{if(!armed){armed=true;ev.currentTarget.textContent="Tap again to remove";return}
+      S.wants=S.wants.filter(x=>x.id!==w.id);saveWants();close();render();toast("Removed")};
   });
 }
 function viewSettings(){
@@ -931,14 +1002,16 @@ $("#file-pick").onchange=e=>{onPhoto(e.target.files[0]);e.target.value=""};
 $("#file-import").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   try{const d=JSON.parse(await f.text());const items=Array.isArray(d)?d:d.cards;if(!Array.isArray(items))throw 0;
     const ids=new Set(S.coll.map(x=>x.id));let n=0;for(const it of items)if(it.sid&&!ids.has(it.id)){S.coll.push({...it,id:it.id||uid()});n++}
-    saveColl();render();toast(`Imported ${n} entries`)}catch{toast("That file isn't a Sleevescope backup.")}};
+    let m=0;if(Array.isArray(d.wants)){const wids=new Set(S.wants.map(x=>x.id));for(const w of d.wants)if(w.sid&&!wids.has(w.id)){S.wants.push({...w,id:w.id||uid()});m++}saveWants()}
+    saveColl();render();toast(`Imported ${n} cards${m?` and ${m} wants`:""}`)}catch{toast("That file isn't a Sleevescope backup.")}};
 function download(name,text,type){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
 async function refreshPrices(btn){
   btn.disabled=true;btn.textContent="Refreshing…";
-  try{const ids=[...new Set(S.coll.map(e=>e.sid))];
+  try{const ids=[...new Set([...S.coll,...S.wants].map(e=>e.sid))];
     for(let i=0;i<ids.length;i+=75){const r=await sf("/cards/collection",{body:{identifiers:ids.slice(i,i+75).map(id=>({id}))}});
-      for(const c of r?.data||[]){const s=slim(c);S.coll.filter(e=>e.sid===c.id).forEach(e=>Object.assign(e,{eur:s.eur,eurFoil:s.eurFoil,cmUrl:s.cmUrl,cmId:s.cmId,priced:s.priced}))}}
-    saveColl();toast("Prices updated")}catch(e){toast("Couldn't refresh prices: "+e.message)}
+      for(const c of r?.data||[]){const s=slim(c);S.coll.filter(e=>e.sid===c.id).forEach(e=>Object.assign(e,{eur:s.eur,eurFoil:s.eurFoil,cmUrl:s.cmUrl,cmId:s.cmId,priced:s.priced}));
+        S.wants.filter(e=>e.sid===c.id).forEach(e=>Object.assign(e,{eur:s.eur,eurFoil:s.eurFoil,cmUrl:s.cmUrl,cmId:s.cmId,priced:s.priced}))}}
+    saveColl();saveWants();toast("Prices updated")}catch(e){toast("Couldn't refresh prices: "+e.message)}
   render();
 }
 document.addEventListener("click",e=>{
@@ -954,12 +1027,14 @@ document.addEventListener("click",e=>{
   if(t.id==="add-hand") return addByHand();
   if(t.id==="rv-add") return commitReview();
   if(t.id==="refresh") return refreshPrices(t);
-  if(t.id==="exp-json") return download(`sleevescope-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({app:"Sleevescope",version:1,cards:S.coll},null,1),"application/json");
+  if(t.id==="exp-json") return download(`sleevescope-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify({app:"Sleevescope",version:2,cards:S.coll,wants:S.wants},null,1),"application/json");
   if(t.id==="exp-csv"){const h=["Name","Set","Set code","Number","Language","Foil","Qty","Price EUR","Total EUR","Binder","Cardmarket ID"];
     const rows=S.coll.map(e=>[e.name,e.setName,e.set.toUpperCase(),e.num,e.lang,e.foil?"yes":"no",e.qty,priceOf(e)??"",priceOf(e)!=null?(priceOf(e)*e.qty).toFixed(2):"",e.binder,e.cmId??""]);
     return download("sleevescope.csv",[h,...rows].map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(";")).join("\n"),"text/csv")}
   if(t.id==="imp-json") return $("#file-import").click();
-  const ci=t.closest(".ci"); if(ci) return cardDetail(ci.dataset.id);
+  if(t.id==="add-want") return addWant();
+  if(t.dataset.wlist!==undefined){S.wantList=t.dataset.wlist;render();return}
+  const ci=t.closest(".ci"); if(ci&&ci.dataset.wid) return wantDetail(ci.dataset.wid); if(ci) return cardDetail(ci.dataset.id);
   const rv=t.closest(".rv"); if(rv&&t.dataset.act){
     const it=S.review[+rv.dataset.i];
     switch(t.dataset.act){
@@ -976,6 +1051,7 @@ document.addEventListener("click",e=>{
 document.addEventListener("input",e=>{
   const id=e.target.id, s=S.settings;
   if(id==="binder"){s.binder=e.target.value;saveSet()}
+  if(id==="want-list"){s.wantList=e.target.value;saveSet()}
   if(id==="cq"){S.q=e.target.value;const pos=e.target.selectionStart;render();const n=$("#cq");n.focus();n.setSelectionRange(pos,pos)}
   if(id==="s-key"){s.apiKey=e.target.value.trim();saveSet()}
   if(id==="s-model"){s.model=e.target.value.trim()||DEFAULT_SETTINGS.model;saveSet()}
