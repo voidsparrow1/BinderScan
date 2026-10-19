@@ -40,7 +40,8 @@ jobs:
               faces = [c.get("image_uris")] if c.get("image_uris") else [f.get("image_uris") for f in c.get("card_faces", [])]
               slim[c["id"]] = {"name": c["name"], "set": c["set"], "num": c["collector_number"], "oracle_id": c.get("oracle_id"),
                                "frame_effects": c.get("frame_effects", []), "border": c.get("border_color"), "full_art": c.get("full_art"),
-                               "finishes": c.get("finishes"), "faces": len([f for f in faces if f])}
+                               "finishes": c.get("finishes"), "faces": len([f for f in faces if f]),
+                               "cardmarket_id": c.get("cardmarket_id"), "purchase": (c.get("purchase_uris") or {}).get("cardmarket")}
               for n, f in enumerate(faces):
                   if f and f.get("small"):
                       try:
