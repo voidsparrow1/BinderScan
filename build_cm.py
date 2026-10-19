@@ -5,23 +5,18 @@ write exact Cardmarket wants-list lines like "1 Card Name (V.2) (Expansion Name)
 Cardmarket keeps showcase/borderless/extended printings in a separate "<Set>: Extras" expansion and numbers several
 printings of the same card within one expansion V.1, V.2, … in the order they were added (by product id).
 
-Expansion names, in order of trust:
-  1. MTGJSON's Cardmarket names (exact, but missing for many recent sets)
-  2. derived: Cardmarket's own sealed-product names in that expansion (common prefix, e.g. "Edge of Eternities"),
-     or Scryfall's set name; an expansion holding a set's showcase/borderless printings gets "<main name>: Extras"
-The derived names are checked against MTGJSON where both exist, and the agreement is reported.
+Expansion names come from MTGJSON's Cardmarket names. MTGJSON often lacks the "Extras" expansion of recent sets;
+an unnamed expansion holding a set's showcase/borderless printings (per Scryfall) next to a main expansion MTGJSON
+knows is named "<main name>: Extras". Expansions without a reliable name are left out (the app then copies the card
+as any version).
 
 Format: {"built": unix, "exp": {idExpansion: name}, "p": [[idProduct delta, idExpansion, v], ...]}.
 """
-import collections, gzip, json, os, re, time, urllib.request
+import collections, gzip, json, os, time, urllib.request
 import build_index as BI   # Scryfall bulk-data helpers
 
 UA = {"User-Agent": "Sleevescope-catalogue/1.0 (personal collection app)"}
 VARIANT_EFFECTS = {"showcase", "extendedart", "inverted", "etched", "fullart"}
-TRAILING = {"play", "set", "draft", "collector", "jumpstart", "theme", "prerelease", "booster", "boosters", "box", "display",
-            "bundle", "pack", "packs", "case", "kit", "deck", "decks", "starter", "commander", "gift", "fat", "-", "–", "|", ":"}
-
-
 def get_json(url):
     with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=300) as r:
         return json.loads(r.read())
@@ -50,29 +45,11 @@ def scryfall_by_cmid(cache_dir):
     return out
 
 
-def sealed_prefix(names):
-    """Expansion name as Cardmarket writes it on its sealed products: the words all of them start with,
-    minus trailing product words ("Edge of Eternities Play Booster Box" + "Edge of Eternities Bundle" -> "Edge of Eternities")."""
-    if len(names) < 2:
-        return None
-    words = [n.split() for n in names]
-    common = []
-    for col in zip(*words):
-        if len({w.casefold() for w in col}) != 1:
-            break
-        common.append(col[0])
-    while common and common[-1].casefold().strip(":") in TRAILING:
-        common.pop()
-    name = " ".join(common).strip(" -–:|")
-    return name if len(name) >= 3 else None
-
-
 def main():
     root = os.path.dirname(os.path.abspath(__file__))
     cache_dir = os.path.join(root, ".cache"); os.makedirs(cache_dir, exist_ok=True)
     base = "https://downloads.s3.cardmarket.com/productCatalog/productList/"
     singles = get_json(base + "products_singles_1.json")["products"]
-    sealed = get_json(base + "products_nonsingles_1.json")["products"]
     sets = get_json("https://mtgjson.com/api/v5/SetList.json")["data"]
     sf = scryfall_by_cmid(cache_dir)
 
@@ -90,9 +67,6 @@ def main():
         if rec:
             st = stats[p["idExpansion"]]
             st["sets"][rec[0]] += 1; st["names"][rec[0]] = rec[1]; st["variant"] += rec[2]; st["n"] += 1
-    sealed_names = collections.defaultdict(list)
-    for p in sealed:
-        sealed_names[p["idExpansion"]].append(p["name"])
 
     by_set = collections.defaultdict(list)
     for e, st in stats.items():
@@ -100,27 +74,18 @@ def main():
             code = st["sets"].most_common(1)[0][0]
             by_set[code].append(e)
 
-    def main_name(e, code):
-        return known.get(e) or sealed_prefix(sealed_names.get(e, [])) or stats[e]["names"][code]
-
+    # Only one kind of name is derived: an unnamed expansion that holds a set's showcase/borderless printings, next to
+    # a main expansion MTGJSON knows, is that set's "<main name>: Extras" (Cardmarket's pattern, like ": Promos").
     derived = {}
     for code, exps in by_set.items():
         share = {e: stats[e]["variant"] / stats[e]["n"] for e in exps}
-        mains = [e for e in exps if share[e] < 0.5]
-        extras = [e for e in exps if share[e] >= 0.5]
-        if len(mains) == 1:
-            m = mains[0]
-            derived[m] = sealed_prefix(sealed_names.get(m, [])) or stats[m]["names"][code]
-            if len(extras) == 1:
-                derived[extras[0]] = main_name(m, code) + ": Extras"
-        elif not mains and len(extras) == 1:
-            derived[extras[0]] = sealed_prefix(sealed_names.get(extras[0], [])) or stats[extras[0]]["names"][code]
-
-    for label, cond in (("all", lambda e: True), ("since 2019", lambda e: e >= 2500)):
-        both = [e for e in derived if e in known and cond(e)]
-        agree = sum(1 for e in both if derived[e].casefold() == known[e].casefold())
-        misses = [(known[e], derived[e]) for e in both if derived[e].casefold() != known[e].casefold()][-10:]
-        print(f"::notice title=build_cm::derived vs MTGJSON ({label}): {agree}/{len(both)} agree; differences: {misses}")
+        mains = [e for e in exps if e in known and share[e] < 0.5 and not known[e].endswith((": Extras", ": Promos"))]
+        extras = [e for e in exps if e not in known and share[e] >= 0.5]
+        if len(mains) == 1 and len(extras) == 1:
+            derived[extras[0]] = known[mains[0]] + ": Extras"
+    explicit = [s.get("mcmNameExtras") for s in sets if s.get("mcmNameExtras")]
+    print(f"::notice title=build_cm::{len(derived)} Extras expansions named from their main set; "
+          f"MTGJSON's own Extras names (pattern check): {explicit[:6]}; derived examples: {list(derived.values())[-6:]}")
 
     exp = {**derived, **known}
     groups = collections.defaultdict(list)
