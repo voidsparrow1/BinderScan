@@ -28,5 +28,6 @@ If Actions can't push (error 403 in the log): Settings → Actions → General �
 The **Diagnostics** workflow only exists for debugging recognition; it writes card data to a separate `diag` branch.
 
 ## Using it
+- **Add without a photo**: Scan tab → "Add a card without a photo" (or "+ Add another card" in the review list). Search by name, or type set + number like `fin 519` for the exact printing.
 - **Prices**: Cardmarket trend prices (EUR) via Scryfall. Each card links to Cardmarket filtered to sellers in your country.
 - **Data** stays on your phone. Use Export backup regularly.
