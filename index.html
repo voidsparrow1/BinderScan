@@ -176,7 +176,7 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const APP_VERSION = "v17";
+const APP_VERSION = "v18";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1", SK_WANTS = "sleevescope.wants.v1"; // old names kept on purpose: renaming would lose saved data
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
@@ -894,32 +894,48 @@ async function loadCm(){
   if(CM) return CM;
   const r=await fetch("data/cm.json");if(!r.ok) throw new Error("Cardmarket version table not found");
   const d=await r.json(),p=new Map();let pid=0;for(const [dp,e,v] of d.p){pid+=dp;p.set(pid,[e,v])}
-  CM={exp:d.exp,p};return CM;
+  CM={exp:d.exp,guess:d.guess||{},p};return CM;
+}
+// Cardmarket's name for an expansion: known from the table, set by you, or a suggestion you can check
+function cmExpName(cm,e){
+  if(cm.exp[e]) return{name:cm.exp[e],sure:true};
+  const mine=(S.settings.cmExp||{})[e];if(mine) return{name:mine,sure:true,mine:true};
+  return cm.guess[e]?{name:cm.guess[e],sure:false}:null;
 }
 function cmWantsText(items,exact,cm){
-  const m=new Map();let unmatched=0;
+  const m=new Map(),check=new Map();let unmatched=0;
   for(const w of items){
     let suffix="";
-    if(exact&&!w.any){const hit=cm?.p.get(+cmIdOf(w)),en=hit&&cm.exp[hit[0]];
-      if(en) suffix=(hit[1]?` (V.${hit[1]})`:"")+` (${en})`; else unmatched+=w.qty}
+    if(exact&&cm&&!w.any){
+      const hit=cm.p.get(+cmIdOf(w)),en=hit&&cmExpName(cm,hit[0]);
+      if(en){suffix=(hit[1]?` (V.${hit[1]})`:"")+` (${en.name})`;
+        if(!en.sure||en.mine) check.set(hit[0],{e:hit[0],name:en.name,set:w.setName,example:w.name+(hit[1]?` (V.${hit[1]})`:""),mine:!!en.mine})}
+      else unmatched+=w.qty;
+    }
     const k=w.name+suffix;m.set(k,(m.get(k)||0)+w.qty);
   }
-  return{text:[...m].map(([k,q])=>`${q} ${k}`).join("\n"),unmatched};
+  return{text:[...m].map(([k,q])=>`${q} ${k}`).join("\n"),unmatched,check:[...check.values()]};
 }
 function copyWants(){
   const lists=wantLists(),cur=lists.includes(S.wantList)?S.wantList:"",items=S.wants.filter(w=>!cur||w.list===cur);
   const n=items.reduce((s,w)=>s+w.qty,0),foils=items.some(w=>w.foil),exact=items.some(w=>!w.any);
   sheet("Copy for Cardmarket",`
     <p class="hint">${n} card${n===1?"":"s"} ${cur?`from ${esc(cur)}`:"from all lists"}. On Cardmarket, open <b>Wants</b>, create or open a list, paste this into the box and tap <b>Add</b>.</p>
-    <textarea id="cw-text" rows="9" readonly aria-label="List for Cardmarket"></textarea>
-    ${exact?`<label class="check"><input type="checkbox" id="cw-set" checked><span>Exact versions for cards saved with a specific printing<br><small class="muted" id="cw-info">Adds Cardmarket's version and expansion, e.g. (V.2) (Set: Extras). Cards marked "Any version" stay any version.</small></span></label>`:""}
+    <textarea id="cw-text" rows="8" readonly aria-label="List for Cardmarket"></textarea>
+    ${exact?`<label class="check"><input type="checkbox" id="cw-set" checked><span>Exact versions for cards saved with a specific printing<br><small class="muted" id="cw-info">Adds Cardmarket's version and expansion, e.g. (V.2) (Set: Extras). Cards marked "Any version" stay any version.</small></span></label>
+    <div id="cw-check" class="field" hidden></div>`:""}
     ${foils?`<p class="hint">Foil isn't part of Cardmarket's list format. Set foil on those cards in Cardmarket after adding them.</p>`:""}
     <button class="btn primary" id="cw-copy">Copy list</button>`,
   async body=>{
-    const ta=$("#cw-text",body),cb=$("#cw-set",body),info=$("#cw-info",body);let cm=null;
-    const fill=()=>{const r=cmWantsText(items,cb?.checked&&!!cm,cm);ta.value=r.text;
-      if(info&&cb?.checked&&cm) info.textContent=r.unmatched?`${r.unmatched} card${r.unmatched===1?"":"s"} couldn't be matched to a Cardmarket version and ${r.unmatched===1?"is":"are"} copied as any version.`:"All specific printings matched to their Cardmarket version and expansion."};
-    fill();if(cb)cb.onchange=fill;
+    const ta=$("#cw-text",body),cb=$("#cw-set",body),info=$("#cw-info",body),chk=$("#cw-check",body);let cm=null;
+    const fill=(redrawChecks=true)=>{const on=!!(cb?.checked&&cm),r=cmWantsText(items,on,cm);ta.value=r.text;
+      if(info&&on) info.textContent=r.unmatched?`${r.unmatched} card${r.unmatched===1?"":"s"} couldn't be matched to a Cardmarket version and ${r.unmatched===1?"is":"are"} copied as any version.`:"Specific printings get their Cardmarket version and expansion.";
+      if(chk&&redrawChecks){chk.hidden=!on||!r.check.length;
+        chk.innerHTML=`<span class="label">Check these expansion names</span><small>Cardmarket's names for these newer sets aren't published yet, so they're suggestions. If a card isn't found on Cardmarket, open it there and copy the exact expansion name into the field. The app remembers it.</small>`+
+          r.check.map(c=>`<label class="field"><small>${esc(c.set)} printings, e.g. ${esc(c.example)}${c.mine?" (your name)":""}</small><input type="text" data-cmexp="${c.e}" value="${esc(c.name)}" autocapitalize="off"></label>`).join("")}};
+    fill();if(cb)cb.onchange=()=>fill();
+    if(chk)chk.oninput=ev=>{const e=ev.target.dataset.cmexp;if(!e)return;const v=ev.target.value.trim();S.settings.cmExp={...(S.settings.cmExp||{})};
+      if(v&&v!==cm.guess[e])S.settings.cmExp[e]=v;else delete S.settings.cmExp[e];saveSet();fill(false)};
     if(exact){if(info)info.textContent="Loading Cardmarket versions…";try{cm=await loadCm()}catch{if(info)info.textContent="Couldn't load Cardmarket versions, so cards are copied as any version.";if(cb){cb.checked=false;cb.disabled=true}}fill()}
     $("#cw-copy",body).onclick=async ev=>{
       try{await navigator.clipboard.writeText(ta.value);ev.currentTarget.textContent="Copied";toast("List copied. Paste it into your Cardmarket wants list.")}
