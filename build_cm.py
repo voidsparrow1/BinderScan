@@ -87,6 +87,15 @@ def main():
     print(f"::notice title=build_cm::{len(derived)} Extras expansions named from their main set; "
           f"MTGJSON's own Extras names (pattern check): {explicit[:6]}; derived examples: {list(derived.values())[-6:]}")
 
+    if os.environ.get("CM_DEBUG"):
+        unnamed = collections.Counter(p["idExpansion"] for p in singles if p["idProduct"] >= 820000
+                                      and p["idExpansion"] not in known and p["idExpansion"] not in derived)
+        for e, n in unnamed.most_common(15):
+            st = stats.get(e)
+            top = st["sets"].most_common(2) if st else []
+            sib = [(x, known.get(x, "?"), round(stats[x]["variant"] / max(1, stats[x]["n"]), 2)) for code, _ in top[:1] for x in by_set.get(code, []) if x != e]
+            print(f"::notice title=cm_debug {e}::{n} products; sets {[(c, st['names'][c], k) for c, k in top] if st else '-'}; "
+                  f"showcase share {round(st['variant'] / max(1, st['n']), 2) if st else '-'}; same-set expansions {sib}")
     exp = {**derived, **known}
     groups = collections.defaultdict(list)
     for p in singles:
