@@ -45,6 +45,24 @@ jobs:
                   summary[k]=info
               except Exception as e:
                   summary[k]={"error":str(e)[:200]}
+          # verify how Cardmarket numbers versions: follow the product redirect and read the final address/title
+          pages={}
+          for pid in (824124,824273,824308,824347,682327,685041,685042):
+              try:
+                  r=urllib.request.urlopen(urllib.request.Request(f"https://www.cardmarket.com/en/Magic/Products?idProduct={pid}",headers={**UA,"Accept":"text/html"}),timeout=60)
+                  html=r.read().decode("utf-8","ignore"); import re
+                  t=re.search(r"<title>(.*?)</title>",html,re.S)
+                  pages[pid]={"url":r.geturl(),"title":(t.group(1).strip() if t else None)}
+              except Exception as e:
+                  pages[pid]={"error":str(e)[:120]}
+          summary["pages"]=pages
+          # Cardmarket expansion names via MTGJSON
+          try:
+              sl=json.loads(urllib.request.urlopen(urllib.request.Request("https://mtgjson.com/api/v5/SetList.json",headers=UA),timeout=120).read())["data"]
+              summary["mtgjson"]={"sets":len(sl),"with_mcm":sum(1 for x in sl if x.get("mcmId")),
+                 "samples":[{k:x.get(k) for k in ("code","name","mcmId","mcmName","mcmIdExtras","mcmNameExtras")} for x in sl if x.get("code") in ("FIN","BRO","SLD","VOW","DSK","FCA","BRR")]}
+          except Exception as e:
+              summary["mtgjson"]={"error":str(e)[:200]}
           json.dump(summary,open("cm_probe.json","w"),indent=1)
           print("::notice::"+", ".join(f"{k}: {v.get('count',v.get('error','?'))}" for k,v in summary.items()))
           PY
