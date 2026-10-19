@@ -30,7 +30,7 @@ If Actions can't push (error 403 in the log): Settings → Actions → General �
 The **Diagnostics** workflow only exists for debugging recognition; it writes card data to a separate `diag` branch.
 
 ## Using it
-- **Wants**: a separate tab for cards you still need, in as many named lists as you like (e.g. per deck). Shows the cost to buy, whether you already own a card, and "Got it" moves a card into your collection. "Copy for Cardmarket" copies the list in Cardmarket's wants format (`4 Card Name`, optionally `(Expansion)`) to paste into a Cardmarket wants list.
+- **Wants**: a separate tab for cards you still need, in as many named lists as you like (e.g. per deck). Shows the cost to buy, whether you already own a card, and "Got it" moves a card into your collection. "Copy for Cardmarket" copies the list in Cardmarket's wants format to paste into a Cardmarket wants list: `4 Card Name` for any version, `1 Card Name (V.2) (Set: Extras)` for a specific printing (from `data/cm.json`, built by the same GitHub job from Cardmarket's public catalogue and MTGJSON).
 - **Add without a photo**: Scan tab → "Add a card without a photo" (or "+ Add another card" in the review list). Search by name, or type set + number like `fin 519` for the exact printing.
 - **Prices**: Cardmarket trend prices (EUR) via Scryfall. Each card links to Cardmarket filtered to sellers in your country.
 - **Data** stays on your phone. Use Export backup regularly.
