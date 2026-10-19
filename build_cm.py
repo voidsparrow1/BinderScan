@@ -18,9 +18,8 @@ import build_index as BI   # Scryfall bulk-data helpers
 
 UA = {"User-Agent": "Sleevescope-catalogue/1.0 (personal collection app)"}
 VARIANT_EFFECTS = {"showcase", "extendedart", "inverted", "etched", "fullart"}
-SEALED_WORDS = re.compile(r"\b(play|set|draft|collector|jumpstart|theme|prerelease|booster|boosters|box|display|bundle|pack|"
-                          r"case|kit|deck|decks|starter|commander|gift|fat|scene|beginner|challenger|sleeved|blister|"
-                          r"collection|edition|promo|art|series|vip|omega|mythic|premium)\b.*$", re.I)
+TRAILING = {"play", "set", "draft", "collector", "jumpstart", "theme", "prerelease", "booster", "boosters", "box", "display",
+            "bundle", "pack", "packs", "case", "kit", "deck", "decks", "starter", "commander", "gift", "fat", "-", "–", "|", ":"}
 
 
 def get_json(url):
@@ -52,13 +51,20 @@ def scryfall_by_cmid(cache_dir):
 
 
 def sealed_prefix(names):
-    """Expansion name as Cardmarket writes it on its sealed products: the shared words before 'Booster', 'Bundle', …"""
-    stems = [SEALED_WORDS.sub("", n).strip(" -–:|") for n in names]
-    stems = [s for s in stems if len(s) >= 3]
-    if len(stems) < 2:
+    """Expansion name as Cardmarket writes it on its sealed products: the words all of them start with,
+    minus trailing product words ("Edge of Eternities Play Booster Box" + "Edge of Eternities Bundle" -> "Edge of Eternities")."""
+    if len(names) < 2:
         return None
-    best = collections.Counter(stems).most_common(1)[0]
-    return best[0] if best[1] >= max(2, len(stems) // 3) else None
+    words = [n.split() for n in names]
+    common = []
+    for col in zip(*words):
+        if len({w.casefold() for w in col}) != 1:
+            break
+        common.append(col[0])
+    while common and common[-1].casefold().strip(":") in TRAILING:
+        common.pop()
+    name = " ".join(common).strip(" -–:|")
+    return name if len(name) >= 3 else None
 
 
 def main():
@@ -110,10 +116,11 @@ def main():
         elif not mains and len(extras) == 1:
             derived[extras[0]] = sealed_prefix(sealed_names.get(extras[0], [])) or stats[extras[0]]["names"][code]
 
-    both = [e for e in derived if e in known]
-    agree = sum(1 for e in both if derived[e].casefold() == known[e].casefold())
-    misses = [(known[e], derived[e]) for e in both if derived[e].casefold() != known[e].casefold()][:8]
-    print(f"::notice title=build_cm::derived names agree with MTGJSON for {agree}/{len(both)} expansions; examples of differences: {misses}")
+    for label, cond in (("all", lambda e: True), ("since 2019", lambda e: e >= 2500)):
+        both = [e for e in derived if e in known and cond(e)]
+        agree = sum(1 for e in both if derived[e].casefold() == known[e].casefold())
+        misses = [(known[e], derived[e]) for e in both if derived[e].casefold() != known[e].casefold()][-10:]
+        print(f"::notice title=build_cm::derived vs MTGJSON ({label}): {agree}/{len(both)} agree; differences: {misses}")
 
     exp = {**derived, **known}
     groups = collections.defaultdict(list)
