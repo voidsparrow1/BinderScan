@@ -1,0 +1,177 @@
+{
+ "d7183700-6941-4a3d-a581-4f33bea795e9": {
+  "name": "Jeweled Lotus",
+  "set": "cmm",
+  "num": "396",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [],
+  "border": "black",
+  "full_art": false,
+  "finishes": [
+   "nonfoil",
+   "foil"
+  ],
+  "faces": 1,
+  "cardmarket_id": 721716,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products?idProduct=721716&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": "40.80",
+   "usd_foil": "77.51",
+   "usd_etched": null,
+   "eur": "38.82",
+   "eur_foil": "72.51",
+   "tix": "4.46"
+  }
+ },
+ "3c7de64b-3dc8-47dd-8999-4353b5a3a06f": {
+  "name": "Jeweled Lotus",
+  "set": "cmr",
+  "num": "319",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [],
+  "border": "black",
+  "full_art": false,
+  "finishes": [
+   "nonfoil",
+   "foil"
+  ],
+  "faces": 1,
+  "cardmarket_id": 510795,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products?idProduct=510795&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": "39.67",
+   "usd_foil": "65.54",
+   "usd_etched": null,
+   "eur": "38.00",
+   "eur_foil": "67.73",
+   "tix": "4.56"
+  }
+ },
+ "1af70720-ba91-41b0-ba4a-ff2035afdb0e": {
+  "name": "Jeweled Lotus",
+  "set": "cmm",
+  "num": "611",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [
+   "inverted",
+   "etched"
+  ],
+  "border": "black",
+  "full_art": false,
+  "finishes": [
+   "etched"
+  ],
+  "faces": 1,
+  "cardmarket_id": 721819,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products?idProduct=721819&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": null,
+   "usd_foil": null,
+   "usd_etched": "140.62",
+   "eur": null,
+   "eur_foil": null,
+   "tix": "5.28"
+  }
+ },
+ "6e934462-bf6c-48ff-92a4-1df476c420b7": {
+  "name": "Jeweled Lotus",
+  "set": "cmm",
+  "num": "702",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [
+   "inverted"
+  ],
+  "border": "borderless",
+  "full_art": true,
+  "finishes": [
+   "nonfoil",
+   "foil"
+  ],
+  "faces": 1,
+  "cardmarket_id": 721751,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products?idProduct=721751&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": "82.72",
+   "usd_foil": "147.39",
+   "usd_etched": null,
+   "eur": "87.48",
+   "eur_foil": "169.33",
+   "tix": "7.47"
+  }
+ },
+ "99192884-b279-483e-a48a-3724f2e594bd": {
+  "name": "Jeweled Lotus",
+  "set": "cmm",
+  "num": "1066",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [
+   "inverted"
+  ],
+  "border": "borderless",
+  "full_art": true,
+  "finishes": [
+   "foil"
+  ],
+  "faces": 1,
+  "cardmarket_id": 722067,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products?idProduct=722067&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": null,
+   "usd_foil": "619.91",
+   "usd_etched": null,
+   "eur": null,
+   "eur_foil": "576.71",
+   "tix": null
+  }
+ },
+ "8d250660-9bc6-4662-a895-2911a05a3a21": {
+  "name": "Jeweled Lotus",
+  "set": "prm",
+  "num": "86042",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [],
+  "border": "black",
+  "full_art": false,
+  "finishes": [
+   "nonfoil",
+   "foil"
+  ],
+  "faces": 1,
+  "cardmarket_id": null,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products/Search?referrer=scryfall&searchString=Jeweled+Lotus&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": null,
+   "usd_foil": null,
+   "usd_etched": null,
+   "eur": null,
+   "eur_foil": null,
+   "tix": "2.89"
+  }
+ },
+ "4c44abab-85ff-4196-a739-8e363df84aef": {
+  "name": "Jeweled Lotus",
+  "set": "cmr",
+  "num": "695",
+  "oracle_id": "23216e59-f147-4bb7-a698-12777c2f8584",
+  "frame_effects": [
+   "extendedart"
+  ],
+  "border": "black",
+  "full_art": false,
+  "finishes": [
+   "nonfoil",
+   "foil"
+  ],
+  "faces": 1,
+  "cardmarket_id": 510800,
+  "purchase": "https://www.cardmarket.com/en/Magic/Products?idProduct=510800&referrer=scryfall&utm_campaign=card_prices&utm_medium=text&utm_source=scryfall",
+  "prices": {
+   "usd": "70.67",
+   "usd_foil": "236.33",
+   "usd_etched": null,
+   "eur": "74.57",
+   "eur_foil": "186.36",
+   "tix": null
+  }
+ }
+}
