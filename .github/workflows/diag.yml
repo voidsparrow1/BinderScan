@@ -25,10 +25,16 @@ jobs:
         run: |
           mkdir -p out/img && cd out
           python3 - <<'PY'
-          import json, os, time, urllib.request
+          import json, os, time, urllib.parse, urllib.request
           UA = {"User-Agent": "BinderScan-diagnostics/1.0", "Accept": "application/json;q=0.9,*/*;q=0.8", "Content-Type": "application/json"}
-          ids = [i.strip() for i in os.environ["IDS"].split(",") if i.strip()]
+          tokens = [i.strip() for i in os.environ["IDS"].split(",") if i.strip()]
+          ids = [t for t in tokens if not t.startswith("q:")]
           cards = []
+          for t in tokens:
+              if t.startswith("q:"):   # Scryfall search, e.g. q:!"Jeweled Lotus" unique:prints
+                  url = "https://api.scryfall.com/cards/search?q=" + urllib.parse.quote(t[2:])
+                  cards += json.load(urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60))["data"]
+                  time.sleep(0.2)
           for k in range(0, len(ids), 75):
               idents = [{"set": i.split(":")[0], "collector_number": i.split(":")[1]} if ":" in i else {"id": i} for i in ids[k:k + 75]]
               body = json.dumps({"identifiers": idents}).encode()
@@ -41,7 +47,8 @@ jobs:
               slim[c["id"]] = {"name": c["name"], "set": c["set"], "num": c["collector_number"], "oracle_id": c.get("oracle_id"),
                                "frame_effects": c.get("frame_effects", []), "border": c.get("border_color"), "full_art": c.get("full_art"),
                                "finishes": c.get("finishes"), "faces": len([f for f in faces if f]),
-                               "cardmarket_id": c.get("cardmarket_id"), "purchase": (c.get("purchase_uris") or {}).get("cardmarket")}
+                               "cardmarket_id": c.get("cardmarket_id"), "purchase": (c.get("purchase_uris") or {}).get("cardmarket"),
+                               "prices": c.get("prices")}
               for n, f in enumerate(faces):
                   if f and f.get("small"):
                       try:
