@@ -176,7 +176,7 @@ const COUNTRIES = [
   ["Germany",7],["Austria",1],["Belgium",2],["Switzerland",4],["Spain",10],["France",12],
   ["United Kingdom",13],["Italy",17],["Netherlands",23],["Poland",25],["Portugal",26],["Sweden",28]
 ];
-const APP_VERSION = "v18";
+const APP_VERSION = "v19";
 const SK = "binderscan.v1", SK_SET = "binderscan.settings.v1", SK_WANTS = "sleevescope.wants.v1"; // old names kept on purpose: renaming would lose saved data
 const DEFAULT_SETTINGS = {country:"Germany",countryId:7,engine:"image",apiKey:"",model:"claude-sonnet-5-5",binder:"Binder 1"};
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}}
@@ -237,7 +237,14 @@ async function bySetNum(set,num,lang){
 async function prints(card){
   return (await printsRaw(card.oracle)).map(slim);
 }
-function priceOf(e,foil=e.foil){ if(e.override!=null) return e.override; return foil?e.eurFoil:e.eur }
+// Trend price for a finish. Scryfall has no euro price for some finishes (e.g. etched); then Cardmarket's own
+// price list (data/cmprices.json, refreshed weekly by the GitHub job) fills in.
+let PX=null;
+async function loadPx(){try{const r=await fetch("data/cmprices.json");if(r.ok){const d=await r.json();PX=new Map(Object.entries(d.p));return true}}catch{}return false}
+function cmPx(e){return PX&&PX.get(String(e.cmId||(String(e.cmUrl||"").match(/idProduct=(\d+)/)||[])[1]))}
+function trendOf(e,foil){const v=foil?e.eurFoil:e.eur;if(v!=null)return v;const px=cmPx(e);if(!px)return null;return foil?(px[1]??px[0]):(px[0]??px[1])}
+const pxFromCm=e=>(e.eur==null||e.eurFoil==null)&&!!cmPx(e);
+function priceOf(e,foil=e.foil){ if(e.override!=null) return e.override; return trendOf(e,foil) }
 // Cardmarket links. Cardmarket's firewall blocked Scryfall's tracking link (referrer=scryfall…) when it was opened
 // from this app, so the card button uses the plain product redirect, and links send no referrer.
 const cmIdOf=e=>e.cmId||(String(e.cmUrl||"").match(/idProduct=(\d+)/)||[])[1]||null;
@@ -689,7 +696,7 @@ function sheet(title,bodyHtml,onMount){
   document.body.appendChild(bg);onMount?.($(".sheet-body",bg),close);return close;
 }
 function printRow(p,cur,foil){
-  const pr=foil?p.eurFoil:p.eur;
+  const pr=trendOf(p,foil);
   return `<button class="pr" data-sid="${p.sid}" aria-current="${p.sid===cur}"><img src="${esc(p.img)}" alt="" loading="lazy"><span class="body"><span style="font-weight:600">${esc(p.setName)}</span><span class="meta"><span>${esc(p.set.toUpperCase())} ${esc(p.num)}</span><span class="rar rar-${p.rarity}">${esc(cap(p.rarity))}</span><span>${esc((p.released||"").slice(0,4))}</span></span><span class="meta">${p.finishes.map(f=>f==="nonfoil"?"normal":f).join(", ")}</span></span><span class="price">${eur(pr)}</span></button>`;
 }
 function pickVersion(target,onPick){
@@ -774,7 +781,7 @@ function viewScan(){
 function renderReview(){
   const box=$("#review"); if(!box||!S.review) return;
   box.innerHTML=S.review.map((it,i)=>{
-    const c=it.card, p=c?(it.foil?c.eurFoil:c.eur):null;
+    const c=it.card, p=c?trendOf(c,it.foil):null;
     const canFoil=c&&c.finishes.includes("foil")&&c.finishes.includes("nonfoil");
     return `<article class="rv ${it.include?"":"off"}" data-i="${i}">
       <div class="thumbs"><img src="${esc(c?.img||it.thumb||"")}" alt="">${it.thumb?`<img class="crop" src="${it.thumb}" alt="Your photo">`:""}</div>
@@ -795,7 +802,7 @@ function renderReview(){
       </div></article>`;
   }).join("");
   const sel=S.review.filter(x=>x.include&&x.card);
-  const tot=sel.reduce((s,x)=>s+(x.foil?x.card.eurFoil:x.card.eur||0)*x.qty,0);
+  const tot=sel.reduce((s,x)=>s+(trendOf(x.card,x.foil)||0)*x.qty,0);
   const sum=$("#rv-sum"); if(sum) sum.textContent=`${sel.reduce((s,x)=>s+x.qty,0)} selected, ${eur(tot)}`;
 }
 function sortedColl(){
@@ -828,7 +835,8 @@ function cardDetail(id){
   sheet(e.name,`
     <img class="detail-img" src="${esc(e.imgL||e.img)}" alt="">
     <div class="meta" style="justify-content:space-between"><span>${esc(e.setName)}, ${esc(e.set.toUpperCase())} ${esc(e.num)}</span><span class="rar rar-${e.rarity}">${esc(cap(e.rarity))}</span></div>
-    <div class="stats"><div><span>Trend</span><b>${eur(e.eur)}</b></div><div><span>Foil trend</span><b>${eur(e.eurFoil)}</b></div><div><span>Copies</span><b>${e.qty}</b></div></div>
+    <div class="stats"><div><span>Trend</span><b>${eur(trendOf(e,false))}</b></div><div><span>Foil trend</span><b>${eur(trendOf(e,true))}</b></div><div><span>Copies</span><b>${e.qty}</b></div></div>
+    ${pxFromCm(e)?`<p class="hint">Scryfall has no euro price for this printing, so the trend comes from Cardmarket's own price list (updated weekly).</p>`:""}
     <div class="row"><a class="btn primary wide" href="${esc(cmLink(e))}" target="_blank" rel="noopener noreferrer">Open on Cardmarket</a><a class="btn ghost" href="${esc(CM_LINKS.search(e))}" target="_blank" rel="noopener noreferrer">Search by name</a></div>
     <p class="hint">On the card's page, use Cardmarket's filter to show sellers from ${esc(S.settings.country)} only${e.foil?" and foil copies":""}, sorted by price.</p>
     <div class="field"><label class="label" for="d-ovr">Your price from Cardmarket (optional)</label><input type="number" id="d-ovr" inputmode="decimal" step="0.01" min="0" placeholder="e.g. cheapest offer from ${esc(S.settings.country)}" value="${e.override??""}"><small>Overrides the trend price in your totals. Leave empty to use the trend.</small></div>
@@ -950,7 +958,7 @@ function wantDetail(id){
     <img class="detail-img" src="${esc(w.imgL||w.img)}" alt="">
     <div class="meta" style="justify-content:space-between"><span>${w.any?"Any version, shown: ":""}${esc(w.setName)}, ${esc(w.set.toUpperCase())} ${esc(w.num)}</span><span class="rar rar-${w.rarity}">${esc(cap(w.rarity))}</span></div>
     ${own?`<p class="hint" style="color:var(--ok)">You already have ${own} in your collection.</p>`:""}
-    <div class="stats"><div><span>Trend</span><b>${eur(w.eur)}</b></div><div><span>Foil trend</span><b>${eur(w.eurFoil)}</b></div><div><span>Wanted</span><b>${w.qty}</b></div></div>
+    <div class="stats"><div><span>Trend</span><b>${eur(trendOf(w,false))}</b></div><div><span>Foil trend</span><b>${eur(trendOf(w,true))}</b></div><div><span>Wanted</span><b>${w.qty}</b></div></div>
     <div class="row"><a class="btn primary wide" href="${esc(w.any?CM_LINKS.search(w):cmLink(w))}" target="_blank" rel="noopener noreferrer">Open on Cardmarket</a><a class="btn ghost" href="${esc(CM_LINKS.search(w))}" target="_blank" rel="noopener noreferrer">Search by name</a></div>
     <div class="row"><button class="chip foil" id="w-foil" aria-pressed="${w.foil}" ${canFoil?"":"disabled"}>✦ Foil</button><button class="chip" id="w-any" aria-pressed="${!!w.any}" style="${w.any?"background:var(--accent-soft);color:var(--accent)":""}">Any version</button><button class="chip" id="w-ver">Version</button>
       <span class="qty"><button id="w-dec" aria-label="Fewer">−</button><span id="w-q">${w.qty}</span><button id="w-inc" aria-label="More">+</button></span></div>
@@ -1127,6 +1135,7 @@ document.addEventListener("change",e=>{
 });
 const _render=render; render=function(){_render();const cs=$("#csort");if(cs)cs.value=S.sort};
 if("serviceWorker" in navigator&&location.protocol==="https:") navigator.serviceWorker.register("sw.js").catch(()=>{});
+loadPx().then(ok=>{if(ok&&!S.scan)render()});
 render();
 </script>
 </body>
