@@ -1,0 +1,33 @@
+name: Update Cardmarket data
+
+# Weekly: Cardmarket versions/expansions for the wants export (data/cm.json) and Cardmarket trend prices
+# for cards Scryfall has no euro price for (data/cmprices.json).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 4 * * 1"      # Mondays 04:41 UTC
+
+permissions:
+  contents: write
+
+concurrency: build-index
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pillow numpy
+      - run: python build_cm.py
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/cm.json data/cmprices.json
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Update Cardmarket data"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push

@@ -40,7 +40,10 @@ def scryfall_by_cmid(cache_dir):
                 continue
             variant = bool(set(c.get("frame_effects") or []) & VARIANT_EFFECTS) or c.get("border_color") == "borderless" \
                 or bool(c.get("promo_types")) and "boosterfun" in c["promo_types"]
-            out[int(c["cardmarket_id"])] = (c["set"], c["set_name"], variant)
+            pr, fin = c.get("prices") or {}, set(c.get("finishes") or [])
+            # Scryfall has no euro price for some finishes (etched, some foil-only promos): Cardmarket's own list fills in
+            missing = (pr.get("eur") is None and "nonfoil" in fin) or (pr.get("eur_foil") is None and bool(fin & {"foil", "etched"}))
+            out[int(c["cardmarket_id"])] = (c["set"], c["set_name"], variant, missing)
     os.remove(path)
     return out
 
@@ -52,6 +55,7 @@ def main():
     singles = get_json(base + "products_singles_1.json")["products"]
     sets = get_json("https://mtgjson.com/api/v5/SetList.json")["data"]
     sf = scryfall_by_cmid(cache_dir)
+    guide = get_json("https://downloads.s3.cardmarket.com/productCatalog/priceGuide/price_guide_1.json")["priceGuides"]
 
     known = {}
     for s in sets:
@@ -126,6 +130,7 @@ def main():
     cov = sum(1 for p in recent if str(p["idExpansion"]) in out_exp) / max(1, len(recent))
     out_guess = {str(k): v for k, v in sorted(guess.items()) if k in used and str(k) not in out_exp}
     out = {"built": int(time.time()), "exp": out_exp, "guess": out_guess, "p": rows}
+    write_prices(root, sf, guide)
 
     path = os.path.join(root, "data", "cm.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -137,6 +142,21 @@ def main():
               f"({len(known)} from MTGJSON), {len(out_guess)} suggested, recent-set coverage {100*cov:.0f}%, {len(text)/1e6:.1f} MB")
     else:
         print(f"::notice title=build_cm::cm.json unchanged, recent-set coverage {100*cov:.0f}%")
+
+
+def write_prices(root, sf, guide):
+    """data/cmprices.json: Cardmarket trend prices for cards Scryfall has no euro price for: {idProduct: [trend, foil trend]}."""
+    want = {pid for pid, rec in sf.items() if rec[3]}
+    num = lambda v: round(v, 2) if isinstance(v, (int, float)) and v > 0 else None
+    px = {str(g["idProduct"]): [num(g.get("trend")), num(g.get("trend-foil"))] for g in guide if g.get("idProduct") in want}
+    px = {k: v for k, v in px.items() if v[0] or v[1]}
+    path = os.path.join(root, "data", "cmprices.json")
+    old = json.load(open(path)) if os.path.exists(path) else {}
+    if old.get("p") != px:
+        json.dump({"built": int(time.time()), "p": px}, open(path, "w"), separators=(",", ":"))
+        print(f"::notice title=build_cm::cmprices.json written: {len(px)} cards without a Scryfall euro price (of {len(want)})")
+    else:
+        print("::notice title=build_cm::cmprices.json unchanged")
 
 
 if __name__ == "__main__":

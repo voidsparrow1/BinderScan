@@ -31,9 +31,6 @@ jobs:
 
       - run: python build_index.py
 
-      - name: Cardmarket versions for wants export
-        run: python build_cm.py
-
       - uses: actions/cache/save@v4
         if: always()
         with:
